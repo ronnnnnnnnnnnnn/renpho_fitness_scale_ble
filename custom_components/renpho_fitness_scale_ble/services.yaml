@@ -1,0 +1,70 @@
+assign_measurement:
+  name: Assign measurement
+  description: Move a pending (unattributed) measurement to a user's history.
+  fields:
+    device_id:
+      name: Scale device
+      description: Home Assistant device ID of the scale.
+      required: true
+      selector:
+        device:
+          integration: renpho_fitness_scale_ble
+    measurement_id:
+      name: Measurement ID
+      description: ID of the pending measurement (read from the diagnostic sensor).
+      required: true
+      selector:
+        text:
+    user_id:
+      name: User ID
+      description: ID of the user to attribute this measurement to.
+      required: true
+      selector:
+        text:
+
+reassign_measurement:
+  name: Reassign measurement
+  description: Move a measurement from one user's history to another's.
+  fields:
+    device_id:
+      name: Scale device
+      required: true
+      selector:
+        device:
+          integration: renpho_fitness_scale_ble
+    from_user_id:
+      name: From user
+      required: true
+      selector:
+        text:
+    to_user_id:
+      name: To user
+      required: true
+      selector:
+        text:
+    measurement_id:
+      name: Measurement ID
+      description: Optional. Defaults to the most recent measurement for from_user_id.
+      selector:
+        text:
+
+remove_measurement:
+  name: Remove measurement
+  description: Remove a measurement from a user's history.
+  fields:
+    device_id:
+      name: Scale device
+      required: true
+      selector:
+        device:
+          integration: renpho_fitness_scale_ble
+    user_id:
+      name: User ID
+      required: true
+      selector:
+        text:
+    measurement_id:
+      name: Measurement ID
+      description: Optional. Defaults to the most recent measurement for the user.
+      selector:
+        text:

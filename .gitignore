@@ -1,0 +1,38 @@
+# Tests are not tracked (per design decision)
+tests/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# HA dev artifacts
+.HA_VERSION
+home-assistant.log
+home-assistant.log.*
+
+docs/
+CLAUDE.md
+pytest.ini

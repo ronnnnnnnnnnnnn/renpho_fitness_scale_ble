@@ -1,0 +1,177 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "bluetooth_confirm": {
+        "title": "Set up {name}",
+        "description": "Found Renpho scale {name}.\n\nWhich unit does the scale display?",
+        "data": {
+          "scale_display_unit": "Display unit"
+        }
+      },
+      "user": {
+        "title": "Pick a Renpho scale",
+        "description": "Choose a discovered scale and the display unit it should show.",
+        "data": {
+          "address": "Scale",
+          "scale_display_unit": "Display unit"
+        }
+      },
+      "add_first_user": {
+        "title": "Add the first user",
+        "description": "Configure the user this scale is primarily used by. You can add more users later from the integration's Configure menu.",
+        "data": {
+          "name": "User name",
+          "person_entity": "Person entity (optional)",
+          "mobile_notify_services": "Mobile devices for notifications",
+          "body_metrics_enabled": "Calculate body composition metrics"
+        }
+      },
+      "add_first_user_body_metrics": {
+        "title": "Body composition info",
+        "description": "Used by the scale to compute body fat percentage and derived metrics.",
+        "data": {
+          "sex": "Sex",
+          "birthdate": "Birthdate",
+          "height": "Height",
+          "feet": "Height (feet)",
+          "inches": "Height (inches)",
+          "athlete": "Athlete mode",
+          "use_alternative_algorithm": "Use alternative body fat algorithm"
+        },
+        "data_description": {
+          "athlete": "Switches the scale to its athlete-tuned body fat calculation curve. Recommended for users who train regularly and have above-average muscle mass.",
+          "use_alternative_algorithm": "Try this if the body fat percentage doesn't match what you see in the Renpho app."
+        }
+      }
+    },
+    "abort": {
+      "no_devices_found": "No matching devices found.",
+      "already_configured": "This scale is already configured."
+    },
+    "error": {
+      "empty_user_name": "User name cannot be empty.",
+      "duplicate_person_entity": "Another user is already linked to this person entity.",
+      "user_id_generation_failed": "Could not generate a unique user ID. Try a different name.",
+      "invalid_user_name": "Invalid user name."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Renpho Scale options",
+        "description": "Manage users and scale settings.",
+        "menu_options": {
+          "add_user": "Add user",
+          "edit_user": "Edit user",
+          "remove_user": "Remove user",
+          "scale_settings": "Scale settings",
+          "advanced_settings": "Advanced settings"
+        }
+      },
+      "add_user": {
+        "title": "Add user",
+        "data": {
+          "name": "User name",
+          "person_entity": "Person entity (optional)",
+          "mobile_notify_services": "Mobile devices for notifications",
+          "body_metrics_enabled": "Calculate body composition metrics"
+        }
+      },
+      "add_user_body_metrics": {
+        "title": "Body composition info",
+        "data": {
+          "sex": "Sex",
+          "birthdate": "Birthdate",
+          "height": "Height",
+          "feet": "Height (feet)",
+          "inches": "Height (inches)",
+          "athlete": "Athlete mode",
+          "use_alternative_algorithm": "Use alternative body fat algorithm"
+        },
+        "data_description": {
+          "athlete": "Switches the scale to its athlete-tuned body fat calculation curve. Recommended for users who train regularly and have above-average muscle mass.",
+          "use_alternative_algorithm": "Try this if the body fat percentage doesn't match what you see in the Renpho app."
+        }
+      },
+      "edit_user": {
+        "title": "Edit user",
+        "data": {
+          "user_id": "User"
+        }
+      },
+      "edit_user_details": {
+        "title": "Edit user details",
+        "data": {
+          "name": "User name",
+          "person_entity": "Person entity (optional)",
+          "mobile_notify_services": "Mobile devices for notifications",
+          "body_metrics_enabled": "Calculate body composition metrics"
+        }
+      },
+      "edit_user_body_metrics": {
+        "title": "Edit body composition info",
+        "data": {
+          "sex": "Sex",
+          "birthdate": "Birthdate",
+          "height": "Height",
+          "feet": "Height (feet)",
+          "inches": "Height (inches)",
+          "athlete": "Athlete mode",
+          "use_alternative_algorithm": "Use alternative body fat algorithm"
+        }
+      },
+      "remove_user": {
+        "title": "Remove user",
+        "data": {
+          "user_id": "User"
+        }
+      },
+      "scale_settings": {
+        "title": "Scale settings",
+        "data": {
+          "scale_display_unit": "Display unit"
+        }
+      },
+      "advanced_settings": {
+        "title": "Advanced settings",
+        "data": {
+          "history_retention_days": "Weight history retention (days)",
+          "max_history_size": "Maximum stored measurements per user",
+          "enable_library_logging": "Enable verbose library logging"
+        }
+      }
+    },
+    "abort": {
+      "cannot_remove_last_user": "Cannot remove the last user — at least one user must remain.",
+      "user_id_generation_failed": "Could not generate a unique user ID. Try a different name.",
+      "invalid_user_name": "Invalid user name."
+    },
+    "error": {
+      "empty_user_name": "User name cannot be empty.",
+      "duplicate_person_entity": "Another user is already linked to this person entity."
+    }
+  },
+  "selector": {
+    "sex": {
+      "options": {
+        "male": "Male",
+        "female": "Female"
+      }
+    }
+  },
+  "issues": {
+    "person_entity_missing": {
+      "title": "{user_name}: linked person entity no longer exists",
+      "description": "User **{user_name}** is linked to person entity `{person_entity}`, which no longer exists. Because the location filter excludes users whose person state isn't `home`, this user will be silently dropped from automatic measurement assignment.\n\nOpen **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure**, edit the user's profile, and either link a different person entity or clear the field."
+    },
+    "person_entity_unknown": {
+      "title": "{user_name}: linked person has no location",
+      "description": "User **{user_name}** is linked to person entity `{person_entity}`, but that person has no working device trackers, so its state is `unknown`. The location filter treats anything other than `home` as away, so this user will be silently dropped from automatic measurement assignment.\n\nFix it by either:\n\n- Going to **Settings → People**, opening `{person_entity}`, and assigning a device tracker to it (typically the user's phone via the Home Assistant companion app), **or**\n- Going to **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure** and clearing the **Person Entity** field on this user's profile."
+    },
+    "mobile_service_missing": {
+      "title": "{user_name}: mobile notify service `{service}` not found",
+      "description": "User **{user_name}** has `{service}` configured as a notification target, but Home Assistant doesn't know about that service. Actionable notifications sent to it will be silently dropped.\n\nThis usually means the Home Assistant companion app was removed from the phone, or the device has been renamed. Open **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure**, edit the user's profile, and update the **Mobile devices** field."
+    }
+  }
+}
