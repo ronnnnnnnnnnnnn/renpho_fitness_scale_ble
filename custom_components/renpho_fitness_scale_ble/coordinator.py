@@ -780,8 +780,9 @@ class ScaleDataUpdateCoordinator:
         self._scale: RenphoESCS20MScale | None = None
         self._enable_library_logging = enable_library_logging
         # Unsubscribe handle for the HA `core_config_updated` listener that
-        # re-renders cached `timestamp_display` values when locale settings
-        # change. Set in `async_start`, cleared in `async_stop`.
+        # re-renders cached `timestamp_display` values when relevant settings
+        # change (time zone, time_format, country). Set in `async_start`,
+        # cleared in `async_stop`.
         self._unsub_core_config_update: Callable[[], None] | None = None
         # Unregister handle for HA's BT-scanner-registration callback. Set
         # when a scanner change handler is registered in `async_start` and
@@ -1113,7 +1114,7 @@ class ScaleDataUpdateCoordinator:
         Registers two HA-level callbacks:
 
         - ``core_config_updated`` — refreshes cached ``timestamp_display``
-          values when the user changes locale.
+          values when the user changes time zone, time format, or country.
         - BT scanner-registration change — restarts the scale client when
           ESPHome BT proxies come online or offline mid-session, so a
           newly-added proxy is picked up without needing an integration
@@ -1338,11 +1339,11 @@ class ScaleDataUpdateCoordinator:
             _LOGGER.debug("Ignoring ScaleData with no weight")
             return
         timestamp = datetime.now(tz=timezone.utc)
-        # Pre-compute the locale-aware display string here, at record time,
+        # Pre-compute the human-readable timestamp here, at record time,
         # rather than re-rendering on every attribute read. Stored in the
         # measurement's `raw` dict so it travels with the measurement
         # through router persistence; refreshed by `_on_core_config_updated`
-        # if the user changes their HA locale settings.
+        # if the user changes their HA time-format / timezone / country.
         timestamp_iso = timestamp.isoformat()
         measurement = WeightMeasurement(
             weight_kg=weight_kg,
@@ -1750,12 +1751,22 @@ class ScaleDataUpdateCoordinator:
 
     @callback
     def _on_core_config_updated(self, _event) -> None:
-        """Re-render every stored ``timestamp_display`` when HA locale changes.
+        """Re-render every stored ``timestamp_display`` when relevant HA
+        config changes.
 
-        Triggered by the ``core_config_updated`` event, which HA fires on
-        any change to language, country, time zone, time format, or date
-        format. Without this, stored display strings would stay frozen at
-        the values they had when their measurements were recorded.
+        Triggered by the ``core_config_updated`` event. The settings that
+        actually affect our output are:
+
+        - ``time_zone``: changes what ``dt_util.as_local`` produces.
+        - ``time_format``: 12h ↔ 24h toggle in the time portion.
+        - ``country``: feeds the country-based 12h/24h heuristic when
+          ``time_format`` is unset.
+
+        Language and date-format preference changes are no-ops for our
+        output (we render in English with an unambiguous date order),
+        but the event fires anyway and we redo the refresh — harmless.
+        Without this, stored display strings would stay frozen at the
+        values they had when their measurements were recorded.
         """
         # Refresh router-managed history for every configured user.
         for user_profile in self._user_profiles:
@@ -1959,33 +1970,34 @@ class ScaleDataUpdateCoordinator:
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
-    # Locale-aware formatters (used in notification text)
+    # Notification-text formatters (English-only by design — see
+    # `_format_decimal` and `_format_notification_timestamp` for rationale)
     # ------------------------------------------------------------------
 
-    def _get_display_preferences(self) -> tuple[str, str | None, str | None]:
-        """Return ``(language, time_format, date_format)`` from HA's config.
+    def _get_time_format_preference(self) -> str | None:
+        """Return the user's preferred clock format: ``"12"`` | ``"24"`` | ``None``.
 
-        - ``time_format``: ``"12"`` | ``"24"`` | ``None``. If not set on
-          ``hass.config``, inferred from ``hass.config.country`` (12h for
-          US/CA/PH/AU; 24h elsewhere).
-        - ``date_format``: ``"dmy"`` | ``"mdy"`` | ``"ymd"`` | ``None``.
-          ``None`` means "use the spelled-month format" so the date is
-          unambiguous regardless of country.
+        Sourced from ``hass.config.time_format``; if unset, inferred from
+        ``hass.config.country`` (12h for US/CA/PH/AU; 24h elsewhere).
+        Returns ``None`` if neither signal is available — caller picks
+        the default.
+
+        Language and date-format preferences are deliberately NOT read:
+        the integration ships English-only translations, and date order
+        is rendered as unambiguous English ``Mon DD, YYYY`` for all users
+        (see ``_format_notification_timestamp``).
         """
         config = getattr(self.hass, "config", None)
         if config is None:
-            return "en", None, None
-        language = getattr(config, "language", None) or "en"
+            return None
         time_fmt = getattr(config, "time_format", None)
         if time_fmt in ("language", "auto", ""):
             time_fmt = None
-        date_fmt = getattr(config, "date_format", None)
-        if date_fmt in ("language", "auto", ""):
-            date_fmt = None
-        country = _norm_country_code(config)
-        if time_fmt is None and country:
-            time_fmt = "12" if country in _COUNTRY_12H else "24"
-        return language, time_fmt, date_fmt
+        if time_fmt is None:
+            country = _norm_country_code(config)
+            if country:
+                time_fmt = "12" if country in _COUNTRY_12H else "24"
+        return time_fmt
 
     def _format_time_part(
         self,
@@ -1993,10 +2005,10 @@ class ScaleDataUpdateCoordinator:
         time_format: str | None,
         include_seconds: bool,
     ) -> str | None:
-        """Format the time-of-day from explicit display preferences.
+        """Format the time-of-day from the explicit 12h/24h preference.
 
-        Returns ``None`` if ``time_format`` is unspecified, signalling the
-        caller to fall back to Babel for locale-aware formatting.
+        Returns ``None`` if ``time_format`` is unspecified — the caller
+        decides the default (typically 24h, the international standard).
         """
         if time_format == "24":
             return localized.strftime("%H:%M:%S" if include_seconds else "%H:%M")
@@ -2004,27 +2016,6 @@ class ScaleDataUpdateCoordinator:
             fmt = "%I:%M:%S %p" if include_seconds else "%I:%M %p"
             return localized.strftime(fmt).lstrip("0")
         return None
-
-    def _format_date_unambiguous(self, localized: datetime, language: str) -> str:
-        """Format a date with a spelled-out month, locale-aware via Babel.
-
-        Falls back to a plain ``strftime`` if Babel is unavailable.
-        """
-        try:
-            from babel.dates import format_date as babel_format_date
-
-            return babel_format_date(
-                localized,
-                format="medium",
-                locale=language.replace("-", "_"),
-            )
-        except Exception as err:
-            _LOGGER.debug(
-                "Babel format_date failed (locale=%s); using strftime: %s",
-                language,
-                err,
-            )
-            return localized.strftime("%b %d, %Y")
 
     @staticmethod
     def _parse_iso_utc(iso_timestamp: str) -> datetime:
@@ -2043,70 +2034,52 @@ class ScaleDataUpdateCoordinator:
         return dt
 
     def _format_notification_time(self, iso_timestamp: str) -> str:
-        """Format the time-of-day for a measurement timestamp (mobile body)."""
+        """Format the time-of-day for a measurement timestamp (mobile body).
+
+        Honors the user's 12h/24h HA preference (via ``_format_time_part``).
+        Falls back to 24h — the international default — when HA has no
+        explicit or country-inferred preference.
+        """
         try:
             local_dt = dt_util.as_local(self._parse_iso_utc(iso_timestamp))
         except (TypeError, ValueError):
             return iso_timestamp
-        language, time_format, _ = self._get_display_preferences()
+        time_format = self._get_time_format_preference()
         time_str = self._format_time_part(local_dt, time_format, include_seconds=False)
         if time_str is not None:
             return time_str
-        try:
-            from babel.dates import format_datetime as babel_format_datetime
-
-            return babel_format_datetime(
-                local_dt, format="short", locale=language.replace("-", "_")
-            )
-        except Exception as err:
-            _LOGGER.debug("Babel format_datetime failed: %s", err)
-            # Babel unavailable AND no inferred time format: 24h default.
-            return local_dt.strftime("%H:%M")
+        return local_dt.strftime("%H:%M")
 
     def _format_notification_timestamp(self, iso_timestamp: str) -> str:
-        """Format a full date+time for the persistent-notification body."""
+        """Format a full date+time for the persistent-notification body.
+
+        Date is always rendered as unambiguous English ``Mon DD, YYYY``
+        (e.g. ``May 12, 2026``) regardless of HA's date-format preference.
+        The rest of the integration ships English-only translations, so
+        localizing only the timestamp would produce mixed-language UI.
+
+        The time-of-day portion honors the user's 12h/24h preference (via
+        ``_format_time_part``), defaulting to 24h when no preference is
+        inferable.
+        """
         try:
             local_dt = dt_util.as_local(self._parse_iso_utc(iso_timestamp))
         except (TypeError, ValueError):
             return iso_timestamp
-        language, time_format, date_format = self._get_display_preferences()
-        if date_format is not None:
-            date_patterns = {
-                "dmy": "%d/%m/%Y",
-                "mdy": "%m/%d/%Y",
-                "ymd": "%Y-%m-%d",
-            }
-            date_part = date_patterns.get((date_format or "").lower(), "%b %d, %Y")
-            # Treat unknown time_format as 24h (international default).
-            time_fmt = "%I:%M:%S %p" if time_format == "12" else "%H:%M:%S"
-            return local_dt.strftime(f"{date_part} at {time_fmt} %Z")
+        time_format = self._get_time_format_preference()
         time_str = self._format_time_part(local_dt, time_format, include_seconds=True)
         if time_str is None:
             time_str = local_dt.strftime("%H:%M:%S")
-        date_str = self._format_date_unambiguous(local_dt, language)
+        date_str = local_dt.strftime("%b %d, %Y")
         return f"{date_str} at {time_str} {local_dt.strftime('%Z')}".strip()
 
     def _format_decimal(self, value: float, precision: int) -> str:
-        """Locale-aware decimal formatting (e.g., German "72,5", US "72.5")."""
-        language, _, _ = self._get_display_preferences()
-        rounded = round(value, precision)
-        try:
-            from babel.numbers import format_decimal as babel_format_decimal
-
-            pattern = "0." + "0" * precision if precision > 0 else "0"
-            return babel_format_decimal(
-                rounded, format=pattern, locale=language.replace("-", "_")
-            )
-        except Exception as err:
-            _LOGGER.debug("Babel format_decimal failed: %s", err)
-            return f"{rounded:.{precision}f}"
+        """Format a decimal with a fixed precision, always using ``.`` as
+        separator."""
+        return f"{round(value, precision):.{precision}f}"
 
     def _format_weight_for_display(self, weight_kg: float, precision: int = 2) -> str:
-        """Format a weight in the configured display unit, locale-aware.
-
-        Uses Babel for the numeric portion so the decimal separator matches
-        the user's locale (e.g. ``72,5 kg`` in German).
-        """
+        """Format a weight in the configured display unit (kg or lb)."""
         if self._display_unit == WeightUnit.LB:
             value = MassConverter.convert(
                 weight_kg, UnitOfMass.KILOGRAMS, UnitOfMass.POUNDS

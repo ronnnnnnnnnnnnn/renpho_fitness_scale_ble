@@ -343,8 +343,9 @@ class ScalePendingMeasurementsSensor(SensorEntity):
                 body_fat=info.get("body_fat"),
                 resistance_1=info.get("resistance_1"),
                 resistance_2=info.get("resistance_2"),
-                # Pre-rendered when the pending entry was created;
-                # refreshed by `_on_core_config_updated` on locale change.
+                # Pre-rendered when the pending entry was created; refreshed
+                # by `_on_core_config_updated` if time-format / timezone /
+                # country changes.
                 timestamp_display=info.get("timestamp_display"),
             )
             for mid, info in self._coordinator.get_pending_measurements().items()

@@ -28,7 +28,6 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale to Ho
 - **Athlete mode** — per-user toggle for the scale's athlete-tuned body-fat algorithm
 - **Alternative body-fat algorithm** — per-user toggle to match the value shown by the official Renpho app
 - Customizable display units (kg, lb), applied both on the scale and in Home Assistant
-- Locale-aware formatting for notification text — dates, times, and decimals follow your HA locale
 - ESPHome Bluetooth proxy support
 - Battery and firmware revision reported
 - Direct Bluetooth communication (no internet or Renpho app required)
