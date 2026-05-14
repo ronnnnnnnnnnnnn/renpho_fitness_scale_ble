@@ -55,6 +55,62 @@ _LOGGER = logging.getLogger(__name__)
 _SLUG_RE = re.compile(r"[^a-z0-9]")
 
 
+# Bluetooth SIG manufacturer IDs that are not scale OEMs —
+# filtering them out of the manual-flow device list dramatically reduces the
+# noise in a typical household (AirPods, watches, earbuds, speakers, etc.)
+# without ruling out unknown Renpho variants.
+_KNOWN_NON_SCALE_MFR_IDS: frozenset[int] = frozenset(
+    {
+        # Phones / wearables / trackers — the dominant household BT noise
+        0x004C,  # Apple, Inc. — AirPods, AirTags, iBeacon, Find My, HomePod
+        0x0006,  # Microsoft — Surface, Xbox controllers
+        0x0075,  # Samsung Electronics Co. Ltd. — phones, watches, Galaxy Buds
+        0x00E0,  # Google (legacy entry) — Nest, older Pixel ecosystem
+        0x018E,  # Google LLC (current entry) — Fast Pair, Find My Device
+        0x067C,  # Tile, Inc. — Bluetooth trackers
+        # Audio gear
+        0x009E,  # Bose Corporation — headphones, speakers, soundbars
+        0x05A7,  # Sonos Inc — wireless speakers
+        0x0494,  # SENNHEISER electronic GmbH & Co. KG — headphones, mics
+        0x0055,  # Plantronics, Inc. (now Poly) — headsets
+        0x0103,  # Bang & Olufsen A/S — high-end audio
+        0x00CC,  # Beats Electronics — audio (legacy/standalone; modern uses Apple ID)
+        0x0057,  # Harman International — JBL, AKG, Mark Levinson, Harman/Kardon
+        0x065A,  # Marshall Group AB — speakers, headphones
+        0x07C9,  # Skullcandy, Inc. — headphones, earbuds
+        # Other common consumer electronics
+        0x01DA,  # Logitech International SA — keyboards, mice, webcams
+        0x02F2,  # GoPro, Inc. — action cameras
+        0x07A2,  # Roku, Inc. — TV streaming sticks/boxes
+        0x012D,  # Sony Corporation — TVs, headphones, cameras
+        0x068E,  # Razer Inc. — gaming peripherals
+        0x005C,  # Belkin International — accessories, chargers; owns Wemo
+        0x0171,  # Amazon.com Services LLC — Echo, Fire TV, Ring, Blink, Eero
+    }
+)
+
+
+# Service UUIDs that categorically identify a non-scale device class.
+_KNOWN_NON_SCALE_SERVICE_UUIDS: frozenset[str] = frozenset(
+    {
+        # Generic peripherals
+        "00001812-0000-1000-8000-00805f9b34fb",  # HID over GATT (keyboards, mice, gamepads)
+        # Health devices that are explicitly NOT scales — scales have
+        # their own dedicated 0x181D Weight Scale Service
+        "00001808-0000-1000-8000-00805f9b34fb",  # Glucose
+        "00001809-0000-1000-8000-00805f9b34fb",  # Health Thermometer
+        "00001810-0000-1000-8000-00805f9b34fb",  # Blood Pressure
+        # Fitness equipment that isn't a scale
+        "00001816-0000-1000-8000-00805f9b34fb",  # Cycling Speed and Cadence
+        "00001818-0000-1000-8000-00805f9b34fb",  # Cycling Power
+        "00001826-0000-1000-8000-00805f9b34fb",  # Fitness Machine (treadmills, bikes)
+        # Trackers / beacons not necessarily caught by mfr-ID filter
+        "00001819-0000-1000-8000-00805f9b34fb",  # Location and Navigation
+        "0000feaa-0000-1000-8000-00805f9b34fb",  # Eddystone (open beacon protocol)
+    }
+)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -310,7 +366,40 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 or info.address in self._discovered_devices
             ):
                 continue
-            if not info.name or not info.name.startswith("Renpho-Scale"):
+            _LOGGER.debug(
+                "Manual-flow candidate %s — name=%r connectable=%s mfr_data=%s "
+                "service_uuids=%s service_data=%s rssi=%s",
+                info.address,
+                info.name,
+                info.connectable,
+                info.manufacturer_data,
+                info.service_uuids,
+                info.service_data,
+                info.rssi,
+            )
+            if not info.connectable:
+                _LOGGER.debug(
+                    "  → skipped: non-connectable advertisement (beacons can't "
+                    "be scales)"
+                )
+                continue
+            excluded_mfr = _KNOWN_NON_SCALE_MFR_IDS & info.manufacturer_data.keys()
+            if excluded_mfr:
+                _LOGGER.debug(
+                    "  → skipped: manufacturer ID(s) %s are on the known "
+                    "non-scale OEM list",
+                    sorted(excluded_mfr),
+                )
+                continue
+            excluded_svc = _KNOWN_NON_SCALE_SERVICE_UUIDS & set(
+                info.service_uuids or []
+            )
+            if excluded_svc:
+                _LOGGER.debug(
+                    "  → skipped: advertises service UUID(s) %s assigned to "
+                    "a non-scale device class",
+                    sorted(excluded_svc),
+                )
                 continue
             self._discovered_devices[info.address] = Discovery(_title(info), info)
 
