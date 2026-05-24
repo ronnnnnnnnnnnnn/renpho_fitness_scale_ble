@@ -163,15 +163,33 @@
   "issues": {
     "person_entity_missing": {
       "title": "{user_name}: linked person entity no longer exists",
-      "description": "User **{user_name}** is linked to person entity `{person_entity}`, which no longer exists. Because the location filter excludes users whose person state isn't `home`, this user will be silently dropped from automatic measurement assignment.\n\nOpen **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure**, edit the user's profile, and either link a different person entity or clear the field."
+      "description": "User **{user_name}** is linked to person entity `{person_entity}`, which no longer exists. Auto-assignment still works for this user — the location filter ignores broken links and falls back to weight-only matching — but the configured location signal isn't doing anything.\n\nClick **Fix Issue** to clear the broken link, or open **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure** if you'd rather link to a different person entity.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Clear the broken person entity link?",
+            "description": "This will clear the link to `{person_entity}` from **{user_name}**'s profile. Auto-assignment will continue to work using weight matching alone. You can link to a different person entity later from **Configure** if you want.",
+            "submit": "Clear"
+          }
+        }
+      }
     },
     "person_entity_unknown": {
       "title": "{user_name}: linked person has no location",
-      "description": "User **{user_name}** is linked to person entity `{person_entity}`, but that person has no working device trackers, so its state is `unknown`. The location filter treats anything other than `home` as away, so this user will be silently dropped from automatic measurement assignment.\n\nFix it by either:\n\n- Going to **Settings → People**, opening `{person_entity}`, and assigning a device tracker to it (typically the user's phone via the Home Assistant companion app), **or**\n- Going to **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure** and clearing the **Person Entity** field on this user's profile."
+      "description": "User **{user_name}** is linked to person entity `{person_entity}`, but that person has no working device trackers, so its state is `unknown`. Auto-assignment continues using weight matching — the link doesn't actively cause a problem — but location-based filtering for this user is effectively disabled until a tracker is assigned.\n\nFix it by either:\n\n- Going to **Settings → People**, opening `{person_entity}`, and assigning a device tracker to it (typically the user's phone via the Home Assistant companion app), **or**\n- Going to **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure** and clearing the **Person Entity** field on this user's profile if you don't plan to set up a tracker."
     },
     "mobile_service_missing": {
       "title": "{user_name}: mobile notify service `{service}` not found",
-      "description": "User **{user_name}** has `{service}` configured as a notification target, but Home Assistant doesn't know about that service. Actionable notifications sent to it will be silently dropped.\n\nThis usually means the Home Assistant companion app was removed from the phone, or the device has been renamed. Open **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure**, edit the user's profile, and update the **Mobile devices** field."
+      "description": "User **{user_name}** has `{service}` configured as a notification target, but Home Assistant doesn't know about that service. Actionable notifications sent to it will be silently dropped.\n\nThis usually means the Home Assistant companion app was removed from the phone, or the device has been renamed.\n\nClick **Fix Issue** to remove this entry from the user's profile, or open **Settings → Devices & Services → Renpho Fitness Scale BLE → Configure** if you want to swap it for a different device.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Remove stale notification target?",
+            "description": "This will remove `{service}` from **{user_name}**'s profile. The integration will reload so the change takes effect immediately. You can re-add a notification target later from **Configure** if needed.",
+            "submit": "Remove"
+          }
+        }
+      }
     }
   }
 }

@@ -272,13 +272,17 @@ def _user_basic_schema(hass, defaults: dict | None = None) -> vol.Schema:
         schema[vol.Optional(CONF_PERSON_ENTITY)] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain="person")
         )
-    # Mobile notify services (optional)
+    # Mobile notify services (optional). Filter stored defaults to services that
+    # are still registered — otherwise voluptuous rejects the form on render and
+    # the user can't remove the stale entries.
     mobile_services = _get_mobile_notify_services(hass)
     if mobile_services:
+        saved_services = defaults.get(CONF_MOBILE_NOTIFY_SERVICES) or []
+        valid_default = [s for s in saved_services if s in mobile_services]
         schema[
             vol.Optional(
                 CONF_MOBILE_NOTIFY_SERVICES,
-                default=defaults.get(CONF_MOBILE_NOTIFY_SERVICES, []),
+                default=valid_default,
             )
         ] = cv.multi_select(mobile_services)
     # Body metrics toggle
