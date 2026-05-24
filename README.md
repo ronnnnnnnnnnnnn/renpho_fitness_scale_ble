@@ -88,19 +88,19 @@ Requires Home Assistant **2026.1.0+** and Python 3.13+ (matches Home Assistant's
 ### Initial Setup
 
 1. Step on the scale once to wake its BLE radio. Home Assistant should auto-discover it within a few seconds.
-2. If auto-discovery doesn't pick it up, go to **Settings > Devices & Services**, click **Add Integration**, and search for "Renpho Fitness Scale BLE".
+2. If auto-discovery doesn't pick it up, go to **Settings → Devices & Services**, click **Add Integration**, and search for "Renpho Fitness Scale BLE".
 3. Confirm the discovered device and pick your preferred display unit (kg or lb).
 4. Add the first user profile (see options below). Repeat from **Configure** to add more users.
 
 ### User Profile Configuration Options
 
-When adding or editing user profiles (**Settings > Devices & Services > Renpho Fitness Scale BLE > Configure**), you can configure the following options:
+When adding or editing user profiles (**Settings → Devices & Services → Renpho Fitness Scale BLE → Configure**), you can configure the following options:
 
-- **User Name:** Display name for the user profile.
-- **Person Entity (optional):** Link this user profile to a Home Assistant person entity. When linked, the integration uses the person's location state to improve automatic assignment:
+- **User name:** Display name for the user profile.
+- **Person entity (optional):** Link this user profile to a Home Assistant person entity. When linked, the integration uses the person's location state to improve automatic assignment:
   - If the person is marked as `not_home`, they are excluded from automatic assignment for new measurements
   - This helps avoid incorrectly assigning measurements when household members are away
-- **Mobile Devices (optional):** Select one or more mobile devices (via Home Assistant companion app) to receive actionable notifications for ambiguous measurements:
+- **Mobile devices (optional):** Select one or more mobile devices (via Home Assistant companion app) to receive actionable notifications for ambiguous measurements:
   - When enabled, you'll receive a mobile notification with tap-to-assign buttons directly on your phone
   - Each candidate user gets a personalized notification with "Assign to Me" and "Not Me" buttons
 - **Calculate body composition metrics:** Calculate BMI, body fat %, and the rest of the derived metrics. Requires sex, date of birth, and height.
@@ -142,7 +142,7 @@ When you finally attribute a pending measurement to a user, the integration comp
 
 ### Managing Users
 
-You can manage user profiles by navigating to your device in **Settings > Devices & Services > Renpho Fitness Scale BLE**. Click **CONFIGURE** to:
+You can manage user profiles by navigating to your device in **Settings → Devices & Services → Renpho Fitness Scale BLE**. Click **CONFIGURE** to:
 
 - **Add a new user:** Create a new profile with optional person entity link, mobile devices, and body composition.
 - **Edit a user:** Update a user's name, linked person entity, mobile devices, body-metric settings, athlete mode, or algorithm choice.
@@ -150,7 +150,7 @@ You can manage user profiles by navigating to your device in **Settings > Device
 
 ## Services
 
-The integration provides services to manage measurements, especially for handling ambiguous weigh-ins. You can use these in scripts or automations, or call them directly from **Developer Tools > Actions**.
+The integration provides services to manage measurements, especially for handling ambiguous weigh-ins. You can use these in scripts or automations, or call them directly from **Developer Tools → Actions**.
 
 All three take the Home Assistant `device_id` of the scale plus a `user_id` (a slug derived from the user's display name — e.g. `"jane"`, `"john2"` — visible on the **User Directory** diagnostic sensor's attributes) and, where applicable, a `measurement_id` (a stable opaque string read from the **Pending Measurements** diagnostic sensor or the per-user weight sensor's `weight_history` attribute).
 
@@ -238,7 +238,7 @@ Enable **Athlete mode** on the user's profile.
 
 ### Mobile-app "Assign to Me" / "Not Me" buttons don't work
 
-- Confirm the [Home Assistant companion app](https://companion.home-assistant.io/) is installed and the device's `notify.mobile_app_`* service exists in **Developer Tools > Services**.
+- Confirm the [Home Assistant companion app](https://companion.home-assistant.io/) is installed and the device's `notify.mobile_app_`* service exists in **Developer Tools → Services**.
 - Confirm the user's profile has the right mobile services selected under **Mobile devices**.
 - The scale only sends actionable notifications for *ambiguous* measurements. If your weight is unique enough that the resolver picks confidently every time, you'll never see them — that's expected.
 
@@ -265,7 +265,7 @@ Before opening a GitHub issue:
     - Integration version (visible on the scale's device card under **Configuration**)
     - Scale firmware revision (also on the device card under `sw_version`)
     - **HVIN** from the regulatory sticker on the back of the scale, including the revision suffix (e.g. `ESCS20MA2`). The HVIN isn't readable over BLE so it can't be included automatically in the diagnostics dump — please type it in by hand.
-4. **If it's a BLE / connection issue,** also enable **Verbose library logging** in the integration's advanced settings, reproduce the problem, and include the relevant log lines.
+4. **If it's a BLE / connection issue,** also enable verbose library logging in the integration's advanced settings, reproduce the problem, and include the relevant log lines.
 
 Issues go to the [GitHub issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
 
