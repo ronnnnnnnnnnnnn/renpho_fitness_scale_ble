@@ -57,7 +57,7 @@ Known-incompatible:
 
 **How to find your HVIN:** look at the regulatory sticker on the back of the scale. The HVIN is printed there alongside the FCC ID and other certification marks. The trailing revision suffix (`A2`, `B2`, …) is what matters. If your HVIN ends in `A2`, this integration is likely to work; any other suffix is unknown territory until reported. (Note: HVIN is not readable over BLE, so it can't be shown on the Home Assistant device card — you have to read it off the sticker.)
 
-If your scale isn't in either table above, please open an issue with the marketed model, HVIN (including the revision suffix), and whether it works. The same compatibility list is mirrored in the [library README's compatibility section](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m#device-compatibility) — that's where new entries are added first, so check there if this list looks out of date.
+If your scale isn't in either table above, please open an issue with the marketed model, HVIN (including the revision suffix), and whether it works. If you'd like to actively help diagnose protocol compatibility for an unsupported HVIN, see [Diagnosing Protocol Compatibility](#diagnosing-protocol-compatibility). The same compatibility list is mirrored in the [library README's compatibility section](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m#device-compatibility) — that's where new entries are added first, so check there if this list looks out of date.
 
 ## Installation
 
@@ -268,6 +268,37 @@ Before opening a GitHub issue:
 4. **If it's a BLE / connection issue,** also enable **Verbose library logging** in the integration's advanced settings, reproduce the problem, and include the relevant log lines.
 
 Issues go to the [GitHub issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
+
+## Diagnosing Protocol Compatibility
+
+If you have a Renpho BLE scale whose HVIN isn't in the [Supported Devices](#supported-devices) tables — or that's listed but isn't behaving the way the integration expects — you can help me diagnose the protocol-level compatibility by capturing a Bluetooth log of the official Renpho Health app talking to the scale. From that I can usually tell whether the scale speaks a protocol close to what this integration already understands, something different but parseable, or something out of reach — and we can figure out next steps from there.
+
+### Capturing the log on Android
+
+1. Delete any old `btsnoop_hci*` files on your phone first.
+2. In Developer Options, enable **Bluetooth HCI Snoop Log**.
+3. Toggle Bluetooth off and on. This starts a fresh log file.
+4. With the Renpho Health app, weigh yourself and **note down the exact date/time of the measurement** along with every value the app reports (weight, body fat, water %, bone mass, etc.). Also note your user profile info — sex, body height, activity level, age. All of this is the ground truth needed to verify the byte decoding against the capture.
+5. Repeat step 4 at least 3 more times at noticeably different weights (e.g. yourself holding something heavy, like a crate of beer).
+6. Disable **Bluetooth HCI Snoop Log**.
+
+Then trigger a bug report from Developer Options (interactive is enough, no need for a full one). Inside the resulting zip, look under `FS\data\misc\bluetooth\logs\` for one or more files whose names begin with `btsnoop_hci` — the exact suffix varies by Android version and manufacturer (`.log`, `.log.last`, `-1.log`, `-2.log`, etc.). If you see several, send all of them.
+
+> **Before sending: confirm the filenames start with `btsnoop_hci`, not `btsnooz_hci`.** (Note the 'z'.) The `btsnooz_hci*` variants are Android's truncated always-on diagnostic buffer — they exist even without HCI snoop logging enabled, and aren't usable for protocol analysis. If those are all you find, the snoop log wasn't actually capturing; double-check the developer option is on, toggle Bluetooth off and on, and redo from step 4. Catching this before sending saves an unnecessary round-trip.
+
+### Capturing the log on iOS
+
+Apple provides a signed Bluetooth-logging configuration profile that enables BLE packet capture on iOS without jailbreaking. The Twocanoes Software knowledge base has a well-illustrated walkthrough: [Capture Bluetooth Packet Trace on iOS](https://twocanoes.com/knowledge-base/capture-bluetooth-packet-trace-on-ios/). You'll need a Mac to extract the captures from the resulting sysdiagnose. Android is still the easier path if you have access to both.
+
+### What to include in the issue
+
+Open a [GitHub issue](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues) and include:
+
+- The marketed model name (from the box)
+- The **HVIN with its revision suffix** from the regulatory sticker on the back of the scale (e.g. `ESCS20MA2`) — see [How to find your HVIN](#supported-devices) above
+- All `btsnoop_hci*` log files from the bug report, attached to the issue (or a WeTransfer / Drive link if too large for GitHub) — see filename note above before attaching
+- For every weigh-in in the capture: the exact timestamp, every value the Renpho Health app showed (weight, body fat, water %, bone mass, etc.), and the user profile data that was active (sex, height, activity level, age)
+- A note on what the scale's display shows during a measurement and after — only the weight, or also other metrics, and whether the display changes over the course of the measurement until it stabilizes
 
 ## Support the Project
 

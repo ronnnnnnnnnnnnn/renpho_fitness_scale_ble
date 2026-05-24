@@ -12,6 +12,7 @@ body:
 
         - Check **Settings → Repairs** in Home Assistant — a repair card may already explain what's wrong.
         - Skim the [Troubleshooting section of the README](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble#troubleshooting).
+        - If the scale doesn't connect, returns no data, or the values are clearly wrong, this is might be a protocol-level compatibility issue — see [Diagnosing Protocol Compatibility](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble#diagnosing-protocol-compatibility) first.
         - Download diagnostics from your scale's device card (**Settings → Devices & Services → Renpho Fitness Scale BLE → your scale → Download Diagnostics**) and attach the JSON file at the bottom of this form.
 
   - type: input
