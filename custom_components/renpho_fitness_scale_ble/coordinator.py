@@ -729,7 +729,7 @@ class BleakScannerHybrid(BaseBleakScanner):
 
 
 class ScaleDataUpdateCoordinator:
-    """Coordinator for a single Renpho ES-CS20M scale.
+    """Coordinator for a single Renpho scale (ES-CS20M and compatible variants).
 
     Owns:
         - the BLE scanner (potentially via ESPHome proxy)

@@ -1,6 +1,6 @@
 # Renpho Fitness Scale BLE Integration for Home Assistant
 
-This custom integration connects your Renpho ES-CS20M smart bathroom scale to Home Assistant over Bluetooth Low Energy (BLE). It provides real-time weight measurements, on-device body composition metrics, and intelligent multi-user routing — all without requiring an internet connection or the Renpho app. This is an unofficial, community-built integration. It is not endorsed by, affiliated with, or supported by Renpho. See the [Disclaimer](#disclaimer) at the bottom for details.
+This custom integration connects your Renpho ES-CS20M smart bathroom scale — and other compatible Renpho scales that share the same BLE protocol (see [Supported Devices](#supported-devices)) — to Home Assistant over Bluetooth Low Energy (BLE). It provides real-time weight measurements, on-device body composition metrics, and intelligent multi-user routing — all without requiring an internet connection or the Renpho app. This is an unofficial, community-built integration. It is not endorsed by, affiliated with, or supported by Renpho. See the [Disclaimer](#disclaimer) at the bottom for details.
 
 > **Also sold as:** Renpho Elis 1, Renpho Smart Body Fat Scale, Renpho Bluetooth Body Composition Scale, and various locale-specific names — the "ES-CS20M" model code is rarely surfaced in retail listings.
 
@@ -8,8 +8,8 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale to Ho
 
 ## Features
 
-- **Supported model:** Renpho ES-CS20M (full features: weight, body composition)
-- Automatic discovery of the Renpho ES-CS20M when it advertises
+- **Supported models:** Renpho ES-CS20M and compatible variants (see [Supported Devices](#supported-devices) for the full list and hardware-revision caveats)
+- Automatic discovery when the scale advertises
 - Intelligent multi-user support:
   - Automatically detects which person is using the scale based on their weight history.
   - Uses an adaptive tolerance system that adjusts to each user's weight fluctuations over time.
@@ -34,20 +34,30 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale to Ho
 
 ## Notes
 
-- The Renpho ES-CS20M computes body fat *on-device*. The integration commits the user's profile (sex, age, height, athlete flag, algorithm choice) to the scale during the ~2-second measurement window — that's how the scale knows which body to compute against. When the resolver can't pick a single user confidently, the scale falls back to weight-only and the integration computes body fat **off-scale** when you later attribute the measurement to a specific user.
+- The scale computes body fat *on-device*. The integration commits the user's profile (sex, age, height, athlete flag, algorithm choice) to the scale during the ~2-second measurement window — that's how the scale knows which body to compute against. When the resolver can't pick a single user confidently, the scale falls back to weight-only and the integration computes body fat **off-scale** when you later attribute the measurement to a specific user.
 - This integration uses the [renpho-escs20m](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m) Python library for BLE communication and [multi-user-scale-core](https://github.com/ronnnnnnnnnnnnn/multi-user-scale-core) for the multi-user routing logic.
 
 ## Supported Devices
 
-| Model           | Status          | Features                                |
-| --------------- | --------------- | --------------------------------------- |
-| Renpho ES-CS20M | Fully supported | Weight, body composition, display unit  |
+Compatibility is determined by the scale's **HVIN** (Hardware Version Identification Number), not the marketed model name. Some ES-CS20M hardware revisions speak a different BLE protocol and aren't supported; some other marketed Renpho models happen to share hardware with the ES-CS20M and work fine. The HVIN — including its trailing revision code (e.g. `…MA2` vs `…MB2`) — is the reliable discriminator.
 
-*As an Amazon Associate I earn from qualifying purchases.*
+Confirmed-working:
 
-**Where to buy ES-CS20M:** [🇺🇸 US](https://www.amazon.com/dp/B01N1UX8RW?tag=ronnnnnnn-20) · [🇬🇧 UK](https://www.amazon.co.uk/dp/B01N1UX8RW?tag=ronnnnnnn02-21) · [🇪🇸 ES](https://www.amazon.es/dp/B01N1UX8RW?tag=ronnnnnnn-21) · [🇮🇹 IT](https://www.amazon.it/dp/B01N1UX8RW?tag=ronnnnnnn0a-21) · [🇫🇷 FR](https://www.amazon.fr/dp/B01N1UX8RW?tag=ronnnnnnn0b-21)
+| Marketed model | HVIN        |
+|----------------|-------------|
+| ES-CS20M       | `ESCS20MA2` |
+| ES-32MD        | `ESCS20MA2` |
+| ES-30M         | `ES30MA2`   |
 
-Other Renpho BLE scale models may work but have not been tested. If you try a different model, please open an issue with what works and what doesn't.
+Known-incompatible:
+
+| Marketed model | HVIN        |
+|----------------|-------------|
+| ES-CS20M       | `ESCS20MB2` |
+
+**How to find your HVIN:** look at the regulatory sticker on the back of the scale. The HVIN is printed there alongside the FCC ID and other certification marks. The trailing revision suffix (`A2`, `B2`, …) is what matters. If your HVIN ends in `A2`, this integration is likely to work; any other suffix is unknown territory until reported. (Note: HVIN is not readable over BLE, so it can't be shown on the Home Assistant device card — you have to read it off the sticker.)
+
+If your scale isn't in either table above, please open an issue with the marketed model, HVIN (including the revision suffix), and whether it works. The same compatibility list is mirrored in the [library README's compatibility section](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m#device-compatibility) — that's where new entries are added first, so check there if this list looks out of date.
 
 ## Installation
 
@@ -207,6 +217,10 @@ The device's firmware revision is shown on its device card via the standard `sw_
 - Step on the scale once to wake its BLE radio — Renpho scales advertise only briefly after being stepped on.
 - If you've previously paired the scale with the Renpho app or another integration, disconnect there first.
 
+### Scale connects but no readings appear
+
+If Home Assistant pairs with the scale successfully but no weight or body-composition measurements ever come through, the most likely cause is an unsupported hardware revision. Some Renpho scales sold under the ES-CS20M name (and other model names) use a different BLE protocol that this integration doesn't speak. Check the [Supported Devices](#supported-devices) table — specifically the HVIN on the regulatory sticker on the back of your scale. If yours isn't listed (or is in the known-incompatible table), please open an issue with the marketed model and HVIN so the compatibility record can be updated.
+
 ### `BleakOutOfConnectionSlotsError` in the log
 
 This typically means one of two things:
@@ -250,6 +264,7 @@ Before opening a GitHub issue:
   - Home Assistant version (Settings → About)
     - Integration version (visible on the scale's device card under **Configuration**)
     - Scale firmware revision (also on the device card under `sw_version`)
+    - **HVIN** from the regulatory sticker on the back of the scale, including the revision suffix (e.g. `ESCS20MA2`). The HVIN isn't readable over BLE so it can't be included automatically in the diagnostics dump — please type it in by hand.
 4. **If it's a BLE / connection issue,** also enable **Verbose library logging** in the integration's advanced settings, reproduce the problem, and include the relevant log lines.
 
 Issues go to the [GitHub issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
