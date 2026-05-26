@@ -9,6 +9,7 @@ the HA host's Bluetooth adapter or via a remote ESPHome proxy.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import platform
 from collections.abc import Callable
@@ -195,6 +196,88 @@ class BluetoothNotAvailableError(Exception):
     """Exception raised when no Bluetooth adapter or ESPHome proxy is available."""
 
     pass
+
+
+class HomeAssistantCallbackScanner(BaseBleakScanner):
+    """Bleak-scanner adapter backed by Home Assistant's Bluetooth callbacks."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        address: str,
+        detection_callback: AdvertisementDataCallback | None = None,
+        service_uuids: list[str] | None = None,
+    ) -> None:
+        super().__init__(detection_callback, service_uuids)
+        self._hass = hass
+        self._address = address
+        self._unsub: Callable[[], None] | None = None
+        self._scanning = False
+        self.seen_devices: dict[str, tuple[BLEDevice, AdvertisementData]] = {}
+
+    async def start(self) -> None:
+        """Subscribe to Home Assistant's shared Bluetooth scanner."""
+        if self._scanning:
+            return
+
+        from homeassistant.components import bluetooth as ha_bluetooth
+
+        @callback
+        def _async_discovered_device(service_info, change) -> None:
+            if self._callback is None:
+                return
+
+            ble_device = ha_bluetooth.async_ble_device_from_address(
+                self._hass, self._address, connectable=True
+            )
+            if ble_device is None:
+                ble_device = getattr(service_info, "device", None)
+            if ble_device is None:
+                _LOGGER.debug(
+                    "Renpho scale advertisement seen, but no connectable BLEDevice "
+                    "is available for %s",
+                    self._address,
+                )
+                return
+
+            advertisement = getattr(service_info, "advertisement", None)
+            if advertisement is None:
+                advertisement = AdvertisementData(
+                    local_name=getattr(service_info, "name", None),
+                    manufacturer_data=getattr(service_info, "manufacturer_data", {}),
+                    service_data=getattr(service_info, "service_data", {}),
+                    service_uuids=getattr(service_info, "service_uuids", []),
+                    tx_power=getattr(service_info, "tx_power", None),
+                    rssi=getattr(service_info, "rssi", None),
+                    platform_data=(service_info, change),
+                )
+
+            self.seen_devices[ble_device.address] = (ble_device, advertisement)
+            result = self._callback(ble_device, advertisement)
+            if inspect.isawaitable(result):
+                self._hass.async_create_task(result)
+
+        self._unsub = ha_bluetooth.async_register_callback(
+            self._hass,
+            _async_discovered_device,
+            {"address": self._address, "connectable": True},
+            ha_bluetooth.BluetoothScanningMode.ACTIVE,
+        )
+        self._scanning = True
+        if service_info := ha_bluetooth.async_last_service_info(
+            self._hass, self._address, connectable=True
+        ):
+            _async_discovered_device(service_info, None)
+
+    async def stop(self) -> None:
+        """Unsubscribe from Home Assistant Bluetooth callbacks."""
+        if self._unsub is not None:
+            self._unsub()
+            self._unsub = None
+        self._scanning = False
+
+    def set_scanning_filter(self, **kwargs) -> None:
+        """Set scanning filter for the scanner."""
 
 
 class BleakScannerESPHome(BaseBleakScanner):
@@ -574,6 +657,7 @@ class BleakScannerHybrid(BaseBleakScanner):
         scanning_mode: Literal["active", "passive"],
         clients: list[APIClient],
         adapter: str | None = None,
+        native_scanner: BaseBleakScanner | None = None,
         **kwargs,
     ):
         """
@@ -585,6 +669,7 @@ class BleakScannerHybrid(BaseBleakScanner):
             scanning_mode: Whether to use active or passive scanning.
             clients: list of ESPHome API clients to use as Bluetooth proxies.
             adapter: The Bluetooth adapter to use for native scanning (Linux only).
+            native_scanner: Optional scanner adapter to use for native advertisements.
             **kwargs: Additional arguments passed to the native scanner.
         """
         super().__init__(None, service_uuids)
@@ -595,32 +680,37 @@ class BleakScannerHybrid(BaseBleakScanner):
         self._scanning = False
 
         # Try to create native scanner
-        try:
-            PlatformBleakScanner, _ = get_platform_scanner_backend_type()
-            scanner_kwargs: dict[str, Any] = {
-                "bluez": {},
-                "cb": {},
-            }
-            if IS_LINUX:
-                # Only Linux supports multiple adapters
-                if adapter:
-                    scanner_kwargs["adapter"] = adapter
-                if scanning_mode == BluetoothScanningMode.PASSIVE:
-                    scanner_kwargs["bluez"] = PASSIVE_SCANNER_ARGS
-            elif IS_MACOS:
-                # We want mac address on macOS
-                scanner_kwargs["cb"] = {"use_bdaddr": True}
-
-            self._native_scanner = PlatformBleakScanner(
-                detection_callback,
-                service_uuids,
-                scanning_mode,
-                **scanner_kwargs,
-            )
+        if native_scanner is not None:
+            self._native_scanner = native_scanner
             self._scanners.append(self._native_scanner)
-            _LOGGER.debug("Native scanner initialized successfully")
-        except Exception as ex:
-            _LOGGER.warning("Failed to initialize native scanner: %s", ex)
+            _LOGGER.debug("Native scanner adapter initialized successfully")
+        else:
+            try:
+                PlatformBleakScanner, _ = get_platform_scanner_backend_type()
+                scanner_kwargs: dict[str, Any] = {
+                    "bluez": {},
+                    "cb": {},
+                }
+                if IS_LINUX:
+                    # Only Linux supports multiple adapters
+                    if adapter:
+                        scanner_kwargs["adapter"] = adapter
+                    if scanning_mode == BluetoothScanningMode.PASSIVE:
+                        scanner_kwargs["bluez"] = PASSIVE_SCANNER_ARGS
+                elif IS_MACOS:
+                    # We want mac address on macOS
+                    scanner_kwargs["cb"] = {"use_bdaddr": True}
+
+                self._native_scanner = PlatformBleakScanner(
+                    detection_callback,
+                    service_uuids,
+                    scanning_mode,
+                    **scanner_kwargs,
+                )
+                self._scanners.append(self._native_scanner)
+                _LOGGER.debug("Native scanner initialized successfully")
+            except Exception as ex:
+                _LOGGER.warning("Failed to initialize native scanner: %s", ex)
 
         # Try to create proxy scanner
         try:
@@ -920,6 +1010,9 @@ class ScaleDataUpdateCoordinator:
                             None,
                             BluetoothScanningMode.PASSIVE,
                             esphome_clients,
+                            native_scanner=HomeAssistantCallbackScanner(
+                                self.hass, self.address
+                            ),
                         )
                         _LOGGER.debug(
                             "Created hybrid scanner with native and proxy support"
@@ -940,6 +1033,9 @@ class ScaleDataUpdateCoordinator:
                         "Unexpected error creating Bluetooth scanner: %s", ex
                     )
                     scanner = None
+            elif native:
+                _LOGGER.debug("Using Home Assistant Bluetooth callback scanner")
+                return HomeAssistantCallbackScanner(self.hass, self.address)
             elif not native:
                 # No ESPHome proxies AND no native adapter = no Bluetooth available
                 raise BluetoothNotAvailableError(
