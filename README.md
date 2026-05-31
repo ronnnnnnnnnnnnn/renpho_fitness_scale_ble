@@ -48,6 +48,7 @@ Confirmed-working:
 | ES-CS20M       | `ESCS20MA2` |
 | ES-32MD        | `ESCS20MA2` |
 | ES-30M         | `ES30MA2`   |
+| ES-26M         | `ESCS20MA2` |
 
 Known-incompatible:
 
