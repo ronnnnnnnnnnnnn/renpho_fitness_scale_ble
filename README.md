@@ -39,13 +39,14 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale — a
 
 ## Supported Devices
 
-Compatibility is determined by the scale's **HVIN** (Hardware Version Identification Number), not the marketed model name. Some ES-CS20M hardware revisions speak a different BLE protocol and aren't supported; some other marketed Renpho models happen to share hardware with the ES-CS20M and work fine. The HVIN — including its trailing revision code (e.g. `…MA2` vs `…MB2`) — is the reliable discriminator.
+Compatibility is determined by the scale's **HVIN** (Hardware Version Identification Number), not the marketed model name. Some ES-CS20M hardware revisions speak a different BLE protocol and aren't supported; some other marketed Renpho models happen to share hardware with the ES-CS20M and work fine. The HVIN — including its trailing revision code (e.g. `…MA2` vs `…MB2` vs `…MN`) — is the reliable discriminator.
 
 Confirmed-working:
 
 | Marketed model | HVIN        |
 |----------------|-------------|
 | ES-CS20M       | `ESCS20MA2` |
+| ES-CS20M       | `ESCS20MN`  |
 | ES-32MD        | `ESCS20MA2` |
 | ES-30M         | `ES30MA2`   |
 | ES-26M         | `ESCS20MA2` |
@@ -56,7 +57,9 @@ Known-incompatible:
 |----------------|-------------|
 | ES-CS20M       | `ESCS20MB2` |
 
-**How to find your HVIN:** look at the regulatory sticker on the back of the scale. The HVIN is printed there alongside the FCC ID and other certification marks. The trailing revision suffix (`A2`, `B2`, …) is what matters. If your HVIN ends in `A2`, this integration is likely to work; any other suffix is unknown territory until reported. (Note: HVIN is not readable over BLE, so it can't be shown on the Home Assistant device card — you have to read it off the sticker.)
+**How to find your HVIN:** look at the regulatory sticker on the back of the scale. The HVIN is printed there alongside the FCC ID and other certification marks. The trailing revision suffix (`A2`, `B2`, `N`…) is what matters. If your Renpho scale HVIN ends in `A2` or `N`, this integration is likely to work; if it ends in some other suffix, try it out to see if it works and report back on the issue tracker. (Note: HVIN is not readable over BLE, so it can't be shown on the Home Assistant device card — you have to read it off the sticker.)
+
+> This integration may also work with other QN-Scale non-Renpho branded scales utilizing the same protocol. Feel free to report compatibility results on the [issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
 
 If your scale isn't in either table above, please open an issue with the marketed model, HVIN (including the revision suffix), and whether it works. If you'd like to actively help diagnose protocol compatibility for an unsupported HVIN, see [Diagnosing Protocol Compatibility](#diagnosing-protocol-compatibility). The same compatibility list is mirrored in the [library README's compatibility section](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m#device-compatibility) — that's where new entries are added first, so check there if this list looks out of date.
 

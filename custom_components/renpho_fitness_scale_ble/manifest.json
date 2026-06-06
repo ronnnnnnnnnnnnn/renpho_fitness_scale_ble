@@ -31,8 +31,8 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues",
   "requirements": [
-    "renpho-escs20m==0.2.1",
+    "renpho-escs20m==0.3.0",
     "multi-user-scale-core==0.1.1"
   ],
-  "version": "0.1.4"
+  "version": "0.2.0b1"
 }
