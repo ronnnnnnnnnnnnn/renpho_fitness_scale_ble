@@ -27,11 +27,11 @@ body:
   - type: input
     id: hvin
     attributes:
-      label: HVIN (with revision suffix)
+      label: HVIN or FCC ID
       description: |
-        Printed on the regulatory sticker on the back of the scale. Include the trailing revision code — the suffix (`A2`, `B2`, …) is what determines protocol compatibility.
+        From the regulatory sticker on the back of the scale. Most stickers have a dedicated `HVIN:` field (e.g. `ESCS20MA2`); include the trailing revision suffix. Some stickers don't have an HVIN field — in that case, paste the **FCC ID** instead (e.g. `2A26P-ESCS20M`); the FCC ID embeds the same identifier.
 
-        See the [Supported Devices](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble#supported-devices) section for examples. This field is required: HVIN is not readable over BLE, so it can't be inferred from the diagnostics dump.
+        See the [Supported Devices](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble#supported-devices) section for examples. This field is required: neither identifier is readable over BLE, so it can't be inferred from the diagnostics dump.
       placeholder: ESCS20MA2
     validations:
       required: true

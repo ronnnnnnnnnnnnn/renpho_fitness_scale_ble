@@ -39,25 +39,28 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale — a
 
 ## Supported Devices
 
-Compatibility is determined by the scale's **HVIN** (Hardware Version Identification Number), not the marketed model name. Some ES-CS20M hardware revisions speak a different BLE protocol and aren't supported; some other marketed Renpho models happen to share hardware with the ES-CS20M and work fine. The HVIN — including its trailing revision code (e.g. `…MA2` vs `…MB2` vs `…MN`) — is the reliable discriminator.
+Compatibility seems to be determined by the scale's **HVIN** (Hardware Version Identification Number), not the marketed model name. Some ES-CS20M hardware revisions speak a different BLE protocol and aren't supported; some other marketed Renpho models happen to share hardware with the ES-CS20M and work fine. The HVIN — including its trailing revision code (e.g. `…MA2` vs `…MB2` vs `…MN`) — is the reliable discriminator. Some stickers don't print HVIN as a separate field — in that case the same identifier is embedded as the trailing portion of the **FCC ID** (e.g. FCC ID `2A26P-ESCS20M` → device code `ESCS20M`). The FCC ID column below lets you match on either.
 
 Confirmed-working:
 
-| Marketed model | HVIN        |
-|----------------|-------------|
-| ES-CS20M       | `ESCS20MA2` |
-| ES-CS20M       | `ESCS20MN`  |
-| ES-32MD        | `ESCS20MA2` |
-| ES-30M         | `ES30MA2`   |
-| ES-26M         | `ESCS20MA2` |
+| Marketed model | HVIN        | FCC ID              |
+|----------------|-------------|---------------------|
+| ES-CS20M       | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
+| ES-CS20M       | `ESCS20MN`  | `2A26P-ESCS20MN`    |
+| ES-CS20M       | -           | `2A26P-ESCS20M`     |
+| ES-26M         | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
+| ES-30M         | `ES30MA2`   | `2A26P-ES30MA2`     |
+| ES-32MD        | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
+
+
 
 Known-incompatible:
 
-| Marketed model | HVIN        |
-|----------------|-------------|
-| ES-CS20M       | `ESCS20MB2` |
+| Marketed model | HVIN        | FCC ID              |
+|----------------|-------------|---------------------|
+| ES-CS20M       | `ESCS20MB2` | `2A26P-ESCS20MB2`   |
 
-**How to find your HVIN:** look at the regulatory sticker on the back of the scale. The HVIN is printed there alongside the FCC ID and other certification marks. The trailing revision suffix (`A2`, `B2`, `N`…) is what matters. If your Renpho scale HVIN ends in `A2` or `N`, this integration is likely to work; if it ends in some other suffix, try it out to see if it works and report back on the issue tracker. (Note: HVIN is not readable over BLE, so it can't be shown on the Home Assistant device card — you have to read it off the sticker.)
+**How to find your HVIN:** look at the regulatory sticker on the back of the scale. Most stickers have a dedicated `HVIN:` field alongside the FCC ID. Some stickers don't — in that case, look at the trailing portion of the **FCC ID** (`2A26P-<code>`), which encodes the same identifier. The trailing revision suffix (`A2`, `B2`, `N`, or absent altogether) is what matters. If your HVIN or FCC ID matches a confirmed-working entry above, this integration is likely to work; if it matches a known-incompatible entry it's unlikely to work; if it doesn't match an entry in either table, try it out and report back on the issue tracker. (Note: neither HVIN nor model number is readable over BLE, so the device code can't be shown on the Home Assistant device card — you have to read it off the sticker.)
 
 > This integration may also work with other QN-Scale non-Renpho branded scales utilizing the same protocol. Feel free to report compatibility results on the [issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
 

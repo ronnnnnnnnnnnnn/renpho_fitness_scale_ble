@@ -16,6 +16,10 @@
     },
     {
       "connectable": true,
+      "local_name": "FF:03:00:*"
+    },
+    {
+      "connectable": true,
       "local_name": "FF:04:00:*"
     }
   ],
@@ -34,5 +38,5 @@
     "renpho-escs20m==0.3.0",
     "multi-user-scale-core==0.1.1"
   ],
-  "version": "0.2.0b1"
+  "version": "0.2.1"
 }
