@@ -16,7 +16,12 @@ from homeassistant.components.bluetooth import (
     async_discovered_service_info,
 )
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
-from homeassistant.const import CONF_ADDRESS, UnitOfLength, UnitOfMass
+from homeassistant.const import (
+    CONF_ADDRESS,
+    STATE_UNKNOWN,
+    UnitOfLength,
+    UnitOfMass,
+)
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import (
     config_validation as cv,
@@ -164,6 +169,26 @@ def _validate_person_entity_unique(
         if profile.get(CONF_PERSON_ENTITY) == person_entity:
             return False
     return True
+
+
+def _validate_person_entity_has_tracker(hass, person_entity: str | None) -> bool:
+    """A person entity is only useful here if it can report a location.
+
+    A ``person.X`` with no device trackers assigned sits in state
+    ``unknown``; linking it would do nothing (location-based matching only
+    skips a user when their person is ``not_home``). Reject that so users
+    don't configure an inert link. ``unavailable`` is treated as
+    acceptable — it's typically transient (HA restart, brief tracker
+    outage), and blocking on it would be a flaky validation. A missing
+    state is also accepted (the entity selector only offers existing
+    entities, so this is purely defensive).
+    """
+    if not person_entity:
+        return True
+    state = hass.states.get(person_entity)
+    if state is None:
+        return True
+    return state.state != STATE_UNKNOWN
 
 
 def _get_mobile_notify_services(hass) -> dict[str, str]:
@@ -435,9 +460,14 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         if user_input is not None:
             user_name = user_input[CONF_USER_NAME]
+            person_entity = user_input.get(CONF_PERSON_ENTITY)
             errors: dict[str, str] = {}
             if not _validate_user_name_not_empty(user_name):
                 errors["base"] = "empty_user_name"
+            if person_entity and not _validate_person_entity_has_tracker(
+                self.hass, person_entity
+            ):
+                errors["person_entity"] = "person_entity_no_tracker"
             if errors:
                 return self.async_show_form(
                     step_id="add_first_user",
@@ -447,14 +477,14 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             body_metrics = user_input.get(CONF_BODY_METRICS_ENABLED, False)
             if body_metrics:
                 self.context[CONF_USER_NAME] = user_name
-                self.context[CONF_PERSON_ENTITY] = user_input.get(CONF_PERSON_ENTITY)
+                self.context[CONF_PERSON_ENTITY] = person_entity
                 self.context[CONF_MOBILE_NOTIFY_SERVICES] = user_input.get(
                     CONF_MOBILE_NOTIFY_SERVICES, []
                 )
                 return await self.async_step_add_first_user_body_metrics()
             return self._create_entry_with_first_user(
                 user_name=user_name,
-                person_entity=user_input.get(CONF_PERSON_ENTITY),
+                person_entity=person_entity,
                 mobile_services=user_input.get(CONF_MOBILE_NOTIFY_SERVICES, []),
                 body_metrics_enabled=False,
                 body_metrics_fields=None,
@@ -568,6 +598,10 @@ class ScaleOptionsFlow(OptionsFlow):
                 person_entity, self.user_profiles
             ):
                 errors["person_entity"] = "duplicate_person_entity"
+            elif person_entity and not _validate_person_entity_has_tracker(
+                self.hass, person_entity
+            ):
+                errors["person_entity"] = "person_entity_no_tracker"
             if errors:
                 return self.async_show_form(
                     step_id="add_user",
@@ -679,6 +713,10 @@ class ScaleOptionsFlow(OptionsFlow):
                 exclude_user_id=selected_user_id,
             ):
                 errors["person_entity"] = "duplicate_person_entity"
+            elif person_entity and not _validate_person_entity_has_tracker(
+                self.hass, person_entity
+            ):
+                errors["person_entity"] = "person_entity_no_tracker"
             if errors:
                 return self.async_show_form(
                     step_id="edit_user_details",
