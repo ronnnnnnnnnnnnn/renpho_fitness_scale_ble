@@ -159,6 +159,7 @@ class ScaleUserSensor(RestoreSensor):
         else:
             self._attr_available = True
             self._attr_native_value = value
+            self._attr_force_update = True
         self.async_write_ha_state()
 
 
@@ -211,6 +212,13 @@ class ScaleBatterySensor(RestoreSensor):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_name = "Battery"
+    # Disabled by default: the ES-CS20M / QN-series firmware reports a static
+    # 100% on the standard Battery Level characteristic and does not decrement
+    # it as the cells drain, so a first-class battery entity would mislead users
+    # and never fire low-battery automations. Users whose hardware happens to
+    # report a real value (or who want the raw reading) can opt in by enabling
+    # the entity. The value also remains available in the diagnostics download.
+    _attr_entity_registry_enabled_default = False
 
     def __init__(
         self,

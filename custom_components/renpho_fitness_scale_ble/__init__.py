@@ -12,6 +12,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.start import async_at_started
 
 from .const import (
@@ -155,6 +156,42 @@ async def _handle_mobile_app_action(hass: HomeAssistant, event) -> None:
 # ---------------------------------------------------------------------------
 # Setup / unload
 # ---------------------------------------------------------------------------
+
+
+@callback
+def _disable_battery_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Disable any still-enabled ``*_battery`` sensor for this entry.
+
+    Tested devices seem to report a static 100% on the Battery Level
+    characteristic (see :class:`ScaleBatterySensor`), so the entity is
+    disabled by default. New installs get that via
+    ``entity_registry_enabled_default``; this brings existing installs in
+    line. Only entities the user hasn't already disabled are touched, and the
+    one-time ``minor_version`` guard in :func:`async_migrate_entry` means a
+    later deliberate re-enable is never overridden.
+    """
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if (
+            reg_entry.domain == "sensor"
+            and reg_entry.unique_id.endswith("_battery")
+            and reg_entry.disabled_by is None
+        ):
+            registry.async_update_entity(
+                reg_entry.entity_id,
+                disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+            )
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate older config entries. Called automatically by HA when a stored
+    entry's version is behind the config flow's ``VERSION``/``MINOR_VERSION``."""
+    if entry.version == 1 and entry.minor_version < 2:
+        # 1.1 → 1.2: disable the (unreliable on observed hardware) battery
+        # entity for installs that registered it while it was enabled.
+        _disable_battery_entities(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

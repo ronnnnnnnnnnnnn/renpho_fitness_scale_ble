@@ -1358,20 +1358,31 @@ class ScaleDataUpdateCoordinator:
         )
         # Decide which user this measurement is for.
         # - multi-user mode: the async resolver may have already picked one,
-        #   in which case `_last_resolved_user_id` is set.
+        #   in which case `_last_resolved_user_id` is set. Otherwise, try to
+        #   resolve and if there's still no clear winner, treat as pending.
         # - fixed-user / weight-only mode (1 configured user): the library
         #   doesn't call our resolver at all, but the answer is unambiguous —
         #   route to the only user.
-        # - otherwise: store as pending and fire the ambiguous-notification flow.
         user_id = self._last_resolved_user_id
         self._last_resolved_user_id = None
-        if user_id is None and len(self._user_profiles) == 1:
-            user_id = self._user_profiles[0][CONF_USER_ID]
+
+        candidate_ids: list[str] | None = None
+        if user_id is None:
+            if len(self._user_profiles) == 1:
+                user_id = self._user_profiles[0][CONF_USER_ID]
+            else:
+                candidate_ids = self._compute_pending_candidates(measurement.weight_kg)
+                if len(candidate_ids) == 1:
+                    user_id = candidate_ids[0]
 
         if user_id is not None:
             self._commit_measurement_to_user(user_id, measurement, data)
         else:
-            self._add_pending_measurement(measurement, data)
+            # Reuse the candidate list already computed above (if any) so we
+            # don't run the router a second time for the same measurement.
+            self._add_pending_measurement(
+                measurement, data, candidate_ids=candidate_ids
+            )
 
         # Push firmware revision into the device registry (no-op until the
         # library reads it; harmless to call repeatedly).
@@ -1590,9 +1601,16 @@ class ScaleDataUpdateCoordinator:
         )
 
     def _add_pending_measurement(
-        self, measurement: WeightMeasurement, data: ScaleData
+        self,
+        measurement: WeightMeasurement,
+        data: ScaleData,
+        candidate_ids: list[str] | None = None,
     ) -> None:
         """Store a measurement that wasn't attributed at weigh time.
+
+        ``candidate_ids`` may be passed by the caller when it has already
+        computed the candidate list (via ``_compute_pending_candidates``), so
+        the router isn't evaluated a second time for the same measurement.
 
         Triggers the ambiguous-notification flow (mobile push to candidate
         users + persistent notification) and keeps the measurement in
@@ -1605,7 +1623,8 @@ class ScaleDataUpdateCoordinator:
         # Opportunistic cleanup: drop any pending entries older than the
         # max age before adding the new one.
         self._cleanup_aged_pending_measurements()
-        candidate_ids = self._compute_pending_candidates(measurement.weight_kg)
+        if candidate_ids is None:
+            candidate_ids = self._compute_pending_candidates(measurement.weight_kg)
         timestamp_iso = measurement.timestamp.isoformat()
         # Reuse the measurement's pre-computed display string when present
         # (it always is for live measurements; falls back to a fresh render
@@ -1634,7 +1653,9 @@ class ScaleDataUpdateCoordinator:
         )
 
     def _compute_pending_candidates(self, weight_kg: float) -> list[str]:
-        """Return the same candidate list ``_resolve_user`` would have produced.
+        """Return the same candidate list ``_resolve_user`` would have produced,
+        but with added logic to fallback to all users if no candidates match
+        the weight.
 
         Used in the unresolved (weight-only) path to populate the pending
         record's ``candidates`` so we can mobile-notify those users.
@@ -1650,9 +1671,30 @@ class ScaleDataUpdateCoordinator:
             ranked = self._router.evaluate_measurement(synthetic)
         except Exception:
             _LOGGER.exception("Router evaluation failed in pending-candidate compute")
-            return []
+            ranked = []
         candidate_ids = [c.user_id for c in ranked]
-        return self._filter_candidates_by_location(candidate_ids)
+        filtered_candidates = self._filter_candidates_by_location(candidate_ids)
+        if filtered_candidates:
+            return filtered_candidates
+        if candidate_ids:
+            return candidate_ids
+
+        # Fallback: if no candidates match weight, include all users
+        all_user_ids = [
+            u[CONF_USER_ID] for u in self._user_profiles if CONF_USER_ID in u
+        ]
+        if not all_user_ids:
+            return []
+
+        filtered_all = self._filter_candidates_by_location(all_user_ids)
+        if filtered_all:
+            return filtered_all
+
+        _LOGGER.debug(
+            "No pending candidates found for weight %.2f kg, falling back to all configured users",
+            weight_kg,
+        )
+        return all_user_ids
 
     def _update_config_entry(self) -> None:
         """Persist coordinator state to the config entry's data dict.

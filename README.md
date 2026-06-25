@@ -59,6 +59,7 @@ Known-incompatible:
 | Marketed model | HVIN        | FCC ID              |
 |----------------|-------------|---------------------|
 | ES-CS20M       | `ESCS20MB2` | `2A26P-ESCS20MB2`   |
+| ES-CS20M       | -           | `2APXUES-CS20M`     |
 
 **How to find your HVIN:** look at the regulatory sticker on the back of the scale. Most stickers have a dedicated `HVIN:` field alongside the FCC ID. Some stickers don't — in that case, look at the trailing portion of the **FCC ID** (`2A26P-<code>`), which encodes the same identifier. The trailing revision suffix (`A2`, `B2`, `N`, or absent altogether) is what matters. If your HVIN or FCC ID matches a confirmed-working entry above, this integration is likely to work; if it matches a known-incompatible entry it's unlikely to work; if it doesn't match an entry in either table, try it out and report back on the issue tracker. (Note: neither HVIN nor model number is readable over BLE, so the device code can't be shown on the Home Assistant device card — you have to read it off the sticker.)
 

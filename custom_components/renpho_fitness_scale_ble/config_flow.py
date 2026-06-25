@@ -342,6 +342,9 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Renpho scale config flow."""
 
     VERSION = 1
+    # minor_version 2: battery entity disabled by default (see
+    # async_migrate_entry). New entries start here; older entries migrate up.
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._discovered_devices: dict[str, Discovery] = {}
