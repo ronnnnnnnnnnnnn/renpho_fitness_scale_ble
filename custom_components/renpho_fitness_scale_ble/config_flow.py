@@ -326,6 +326,15 @@ def _bmi_only_schema(display_unit: str, defaults: dict | None = None) -> vol.Sch
 def _user_basic_schema(hass, defaults: dict | None = None, is_aabb: bool = False) -> vol.Schema:
     """Schema for the basic user fields (name, person, mobile, body_metrics_enabled)."""
     defaults = defaults or {}
+    schema: dict[Any, Any] = {
+        vol.Required(CONF_USER_NAME, default=defaults.get(CONF_USER_NAME)): str,
+    }
+    # Person entity
+    person = defaults.get(CONF_PERSON_ENTITY)
+    if person:
+        schema[vol.Optional(CONF_PERSON_ENTITY, default=person)] = (
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="person"))
+        )
     else:
         schema[vol.Optional(CONF_PERSON_ENTITY)] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain="person")
@@ -344,9 +353,10 @@ def _user_basic_schema(hass, defaults: dict | None = None, is_aabb: bool = False
             )
         ] = cv.multi_select(mobile_services)
     # Body metrics toggle
+    metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
     schema[
         vol.Required(
-            CONF_BODY_METRICS_ENABLED,
+            metrics_key,
             default=defaults.get(CONF_BODY_METRICS_ENABLED, False),
         )
     ] = cv.boolean
