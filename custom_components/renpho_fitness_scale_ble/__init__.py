@@ -20,11 +20,13 @@ from .const import (
     CONF_HISTORY_RETENTION_DAYS,
     CONF_MAX_HISTORY_SIZE,
     CONF_PENDING_STATE,
+    CONF_PROTOCOL,
     CONF_ROUTER_STATE,
     CONF_USER_PROFILES,
     DOMAIN,
     HISTORY_RETENTION_DAYS,
     MAX_HISTORY_SIZE,
+    PROTOCOL_QN,
 )
 from .coordinator import (
     BluetoothNotAvailableError,
@@ -213,6 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         max_history_size=entry.data.get(CONF_MAX_HISTORY_SIZE, MAX_HISTORY_SIZE),
         enable_library_logging=entry.data.get(CONF_ENABLE_LIBRARY_LOGGING, False),
+        protocol=entry.data.get(CONF_PROTOCOL, PROTOCOL_QN),
     )
     coordinator.set_config_entry_id(entry.entry_id)
     hass.data[DOMAIN][entry.entry_id] = coordinator

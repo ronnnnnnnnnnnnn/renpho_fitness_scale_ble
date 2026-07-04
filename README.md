@@ -53,13 +53,17 @@ Confirmed-working:
 | ES-32MD        | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
 
 
+Experimental — broadcast subvariant (weight only):
+
+| Marketed model | HVIN | FCC ID            |
+|----------------|------|-------------------|
+| ES-CS20M       | -    | `2APXUES-CS20M`   |
 
 Known-incompatible:
 
 | Marketed model | HVIN        | FCC ID              |
 |----------------|-------------|---------------------|
 | ES-CS20M       | `ESCS20MB2` | `2A26P-ESCS20MB2`   |
-| ES-CS20M       | -           | `2APXUES-CS20M`     |
 
 **How to find your HVIN:** look at the regulatory sticker on the back of the scale. Most stickers have a dedicated `HVIN:` field alongside the FCC ID. Some stickers don't — in that case, look at the trailing portion of the **FCC ID** (`2A26P-<code>`), which encodes the same identifier. The trailing revision suffix (`A2`, `B2`, `N`, or absent altogether) is what matters. If your HVIN or FCC ID matches a confirmed-working entry above, this integration is likely to work; if it matches a known-incompatible entry it's unlikely to work; if it doesn't match an entry in either table, try it out and report back on the issue tracker. (Note: neither HVIN nor model number is readable over BLE, so the device code can't be shown on the Home Assistant device card — you have to read it off the sticker.)
 
@@ -71,15 +75,11 @@ If your scale isn't in either table above, please open an issue with the markete
 
 ### HACS (Recommended)
 
-> **Note:** This integration is not yet in the HACS default store. You must add it as a custom repository first (see below), or use the button which does this automatically.
-
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ronnnnnnnnnnnnn&repository=renpho_fitness_scale_ble&category=integration)
 
 1. Ensure that [HACS](https://hacs.xyz/) is installed in your Home Assistant instance.
-2. Click the button above, **or** add this repository manually:
-  - In HACS, go to **Integrations** → click the three-dot menu (⋮) → **Custom repositories**
-  - Enter `https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble` and select **Integration** as the category
-3. Search for "Renpho Fitness Scale BLE" in HACS and click **Download**.
+2. In the HACS panel, search for "Renpho Fitness Scale BLE" (or click the button above).
+3. Click **Download** on the Renpho Fitness Scale BLE integration.
 4. Restart Home Assistant.
 
 ### Manual Installation

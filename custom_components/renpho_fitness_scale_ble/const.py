@@ -7,6 +7,15 @@ CONF_SCALE_DISPLAY_UNIT = "scale_display_unit"
 CONF_USER_PROFILES = "user_profiles"
 CONF_ROUTER_STATE = "router_state"
 CONF_PENDING_STATE = "pending_state"
+CONF_PROTOCOL = "protocol"
+
+# --- Scale BLE protocols (renpho-escs20m) ---
+# QN-series: connectable GATT scale with body composition (the default and
+# original variant). AABB: the broadcast-only ES-CS20M subvariant that emits
+# weight in its BLE advertisements — non-connectable, weight-only (BMI at most).
+# Entries created before this key existed are treated as QN.
+PROTOCOL_QN = "qn"
+PROTOCOL_AABB = "aabb"
 
 # --- User profile dict keys ---
 CONF_USER_ID = "user_id"

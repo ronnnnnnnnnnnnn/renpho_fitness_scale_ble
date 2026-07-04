@@ -23,11 +23,14 @@ from renpho_escs20m import WEIGHT_KEY, ScaleData, WeightUnit
 
 from .const import (
     CONF_BODY_METRICS_ENABLED,
+    CONF_PROTOCOL,
     CONF_SCALE_DISPLAY_UNIT,
     CONF_USER_ID,
     CONF_USER_NAME,
     CONF_USER_PROFILES,
     DOMAIN,
+    PROTOCOL_AABB,
+    PROTOCOL_QN,
     get_sensor_unique_id,
 )
 from .coordinator import ScaleDataUpdateCoordinator
@@ -378,6 +381,14 @@ async def async_setup_entry(
     coordinator: ScaleDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
     user_profiles = entry.data.get(CONF_USER_PROFILES, [])
     display_unit = entry.data.get(CONF_SCALE_DISPLAY_UNIT, UnitOfMass.KILOGRAMS)
+    protocol = entry.data.get(CONF_PROTOCOL, PROTOCOL_QN)
+    # The broadcast-only variant reports weight only — no impedance, so the
+    # only derivable body metric is BMI (from the stored height).
+    body_metric_descriptions = (
+        [d for d in BODY_METRIC_DESCRIPTIONS if d.key == "body_mass_index"]
+        if protocol == PROTOCOL_AABB
+        else BODY_METRIC_DESCRIPTIONS
+    )
 
     coordinator.set_display_unit(
         WeightUnit.KG if display_unit == UnitOfMass.KILOGRAMS else WeightUnit.LB
@@ -405,7 +416,7 @@ async def async_setup_entry(
             )
         )
         if user.get(CONF_BODY_METRICS_ENABLED, False):
-            for desc in BODY_METRIC_DESCRIPTIONS:
+            for desc in body_metric_descriptions:
                 entities.append(
                     ScaleUserSensor(
                         device_name=entry.title,
@@ -417,7 +428,10 @@ async def async_setup_entry(
                     )
                 )
 
-    entities.append(ScaleBatterySensor(entry.title, address, coordinator))
+    # The broadcast-only variant never connects, so there's no Battery Level
+    # characteristic to read — don't offer a battery entity for it.
+    if protocol != PROTOCOL_AABB:
+        entities.append(ScaleBatterySensor(entry.title, address, coordinator))
     entities.append(ScaleUserDirectorySensor(entry.title, address, coordinator))
     entities.append(ScalePendingMeasurementsSensor(entry.title, address, coordinator))
 

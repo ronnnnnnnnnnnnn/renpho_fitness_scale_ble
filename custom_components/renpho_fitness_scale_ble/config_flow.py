@@ -30,6 +30,8 @@ from homeassistant.helpers import (
 )
 from homeassistant.util.unit_conversion import DistanceConverter
 
+from renpho_escs20m.xaabb.protocol import SUPPORTED_COMPANY_IDS as _AABB_COMPANY_IDS
+
 from .const import (
     CONF_ATHLETE,
     CONF_BIRTHDATE,
@@ -43,6 +45,7 @@ from .const import (
     CONF_MAX_HISTORY_SIZE,
     CONF_MOBILE_NOTIFY_SERVICES,
     CONF_PERSON_ENTITY,
+    CONF_PROTOCOL,
     CONF_SCALE_DISPLAY_UNIT,
     CONF_SEX,
     CONF_UPDATED_AT,
@@ -53,6 +56,8 @@ from .const import (
     DOMAIN,
     HISTORY_RETENTION_DAYS,
     MAX_HISTORY_SIZE,
+    PROTOCOL_AABB,
+    PROTOCOL_QN,
     get_sensor_unique_id,
 )
 
@@ -116,9 +121,27 @@ _KNOWN_NON_SCALE_SERVICE_UUIDS: frozenset[str] = frozenset(
 )
 
 
+# First two manufacturer-data bytes that mark a 0xaabb broadcast frame.
+_AABB_MAGIC = b"\xaa\xbb"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _detect_protocol(info: BluetoothServiceInfo) -> str:
+    """Classify a discovered advertisement by BLE protocol.
+
+    The broadcast-only subvariant (``PROTOCOL_AABB``) is non-connectable and
+    carries its weight in manufacturer data under a generic company id,
+    prefixed with the ``0xaabb`` magic bytes. Everything else — including the
+    connectable QN-series scales — is treated as ``PROTOCOL_QN``.
+    """
+    for company_id, payload in (info.manufacturer_data or {}).items():
+        if company_id in _AABB_COMPANY_IDS and bytes(payload[:2]) == _AABB_MAGIC:
+            return PROTOCOL_AABB
+    return PROTOCOL_QN
 
 
 def _create_user_id(display_name: str, existing_profiles: list[dict]) -> str:
@@ -213,6 +236,49 @@ def _coerce_height_cm(display_unit: str, user_input: dict) -> int:
     )
 
 
+def _height_fields(display_unit: str, defaults: dict) -> dict[Any, Any]:
+    """Height input field(s): a single cm slider (metric) or feet + inches
+    (imperial). Shared by the full body-composition schema and the BMI-only
+    schema."""
+    fields: dict[Any, Any] = {}
+    if display_unit == UnitOfMass.KILOGRAMS:
+        fields[vol.Required(CONF_HEIGHT, default=defaults.get(CONF_HEIGHT, 170))] = (
+            selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=100,
+                    max=250,
+                    unit_of_measurement=UnitOfLength.CENTIMETERS,
+                    step=1,
+                    mode=selector.NumberSelectorMode.SLIDER,
+                )
+            )
+        )
+    else:
+        cm = defaults.get(CONF_HEIGHT, 170)
+        total_in = cm / 2.54
+        feet = int(total_in // 12)
+        inches = round((total_in % 12) * 2) / 2
+        fields[vol.Required(CONF_FEET, default=feet)] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=3,
+                max=8,
+                unit_of_measurement=UnitOfLength.FEET,
+                step=1,
+                mode=selector.NumberSelectorMode.SLIDER,
+            )
+        )
+        fields[vol.Required(CONF_INCHES, default=inches)] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0,
+                max=11.5,
+                unit_of_measurement=UnitOfLength.INCHES,
+                step=0.5,
+                mode=selector.NumberSelectorMode.SLIDER,
+            )
+        )
+    return fields
+
+
 def _body_metrics_schema(display_unit: str, defaults: dict | None = None) -> vol.Schema:
     defaults = defaults or {}
     schema: dict[Any, Any] = {
@@ -231,41 +297,7 @@ def _body_metrics_schema(display_unit: str, defaults: dict | None = None) -> vol
             selector.TextSelectorConfig(type=selector.TextSelectorType.DATE)
         ),
     }
-    if display_unit == UnitOfMass.KILOGRAMS:
-        schema[vol.Required(CONF_HEIGHT, default=defaults.get(CONF_HEIGHT, 170))] = (
-            selector.NumberSelector(
-                selector.NumberSelectorConfig(
-                    min=100,
-                    max=250,
-                    unit_of_measurement=UnitOfLength.CENTIMETERS,
-                    step=1,
-                    mode=selector.NumberSelectorMode.SLIDER,
-                )
-            )
-        )
-    else:
-        cm = defaults.get(CONF_HEIGHT, 170)
-        total_in = cm / 2.54
-        feet = int(total_in // 12)
-        inches = round((total_in % 12) * 2) / 2
-        schema[vol.Required(CONF_FEET, default=feet)] = selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=3,
-                max=8,
-                unit_of_measurement=UnitOfLength.FEET,
-                step=1,
-                mode=selector.NumberSelectorMode.SLIDER,
-            )
-        )
-        schema[vol.Required(CONF_INCHES, default=inches)] = selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0,
-                max=11.5,
-                unit_of_measurement=UnitOfLength.INCHES,
-                step=0.5,
-                mode=selector.NumberSelectorMode.SLIDER,
-            )
-        )
+    schema.update(_height_fields(display_unit, defaults))
     schema[
         vol.Required(
             CONF_ATHLETE,
@@ -281,18 +313,19 @@ def _body_metrics_schema(display_unit: str, defaults: dict | None = None) -> vol
     return vol.Schema(schema)
 
 
-def _user_basic_schema(hass, defaults: dict | None = None) -> vol.Schema:
+def _bmi_only_schema(display_unit: str, defaults: dict | None = None) -> vol.Schema:
+    """Height-only schema for the broadcast (weight-only) variant.
+
+    That scale reports no impedance, so BMI — from height and weight — is the
+    only derivable metric; none of the sex / birthdate / athlete / algorithm
+    inputs the body-fat calculation needs apply.
+    """
+    return vol.Schema(_height_fields(display_unit, defaults or {}))
+
+
+def _user_basic_schema(hass, defaults: dict | None = None, is_aabb: bool = False) -> vol.Schema:
     """Schema for the basic user fields (name, person, mobile, body_metrics_enabled)."""
     defaults = defaults or {}
-    schema: dict[Any, Any] = {
-        vol.Required(CONF_USER_NAME, default=defaults.get(CONF_USER_NAME)): str,
-    }
-    # Person entity
-    person = defaults.get(CONF_PERSON_ENTITY)
-    if person:
-        schema[vol.Optional(CONF_PERSON_ENTITY, default=person)] = (
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="person"))
-        )
     else:
         schema[vol.Optional(CONF_PERSON_ENTITY)] = selector.EntitySelector(
             selector.EntitySelectorConfig(domain="person")
@@ -352,6 +385,7 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth(self, info: BluetoothServiceInfo) -> FlowResult:
         await self.async_set_unique_id(info.address)
         self._abort_if_unique_id_configured()
+        self.context[CONF_PROTOCOL] = _detect_protocol(info)
         self.context["title_placeholders"] = {"name": _title(info)}
         return await self.async_step_bluetooth_confirm()
 
@@ -389,6 +423,9 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 "name": self._discovered_devices[address].title
             }
             self.context[CONF_SCALE_DISPLAY_UNIT] = user_input[CONF_SCALE_DISPLAY_UNIT]
+            self.context[CONF_PROTOCOL] = _detect_protocol(
+                self._discovered_devices[address].discovery_info
+            )
             return await self.async_step_add_first_user()
 
         current_addresses = self._async_current_ids()
@@ -409,10 +446,10 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 info.service_data,
                 info.rssi,
             )
-            if not info.connectable:
+            if not info.connectable and _detect_protocol(info) != PROTOCOL_AABB:
                 _LOGGER.debug(
                     "  → skipped: non-connectable advertisement (beacons can't "
-                    "be scales)"
+                    "be scales, and it's not a 0xaabb broadcast scale)"
                 )
                 continue
             excluded_mfr = _KNOWN_NON_SCALE_MFR_IDS & info.manufacturer_data.keys()
@@ -461,6 +498,12 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_add_first_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        is_aabb = self.context.get(CONF_PROTOCOL) == PROTOCOL_AABB
+        metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
+        warning = (
+            "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
+        ) if is_aabb else ""
+
         if user_input is not None:
             user_name = user_input[CONF_USER_NAME]
             person_entity = user_input.get(CONF_PERSON_ENTITY)
@@ -474,16 +517,19 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             if errors:
                 return self.async_show_form(
                     step_id="add_first_user",
-                    data_schema=_user_basic_schema(self.hass),
+                    data_schema=_user_basic_schema(self.hass, is_aabb=is_aabb),
                     errors=errors,
+                    description_placeholders={"experimental_warning": warning},
                 )
-            body_metrics = user_input.get(CONF_BODY_METRICS_ENABLED, False)
+            body_metrics = user_input.get(metrics_key, False)
             if body_metrics:
                 self.context[CONF_USER_NAME] = user_name
                 self.context[CONF_PERSON_ENTITY] = person_entity
                 self.context[CONF_MOBILE_NOTIFY_SERVICES] = user_input.get(
                     CONF_MOBILE_NOTIFY_SERVICES, []
                 )
+                if self.context.get(CONF_PROTOCOL) == PROTOCOL_AABB:
+                    return await self.async_step_add_first_user_bmi()
                 return await self.async_step_add_first_user_body_metrics()
             return self._create_entry_with_first_user(
                 user_name=user_name,
@@ -493,7 +539,9 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 body_metrics_fields=None,
             )
         return self.async_show_form(
-            step_id="add_first_user", data_schema=_user_basic_schema(self.hass)
+            step_id="add_first_user",
+            data_schema=_user_basic_schema(self.hass, is_aabb=is_aabb),
+            description_placeholders={"experimental_warning": warning},
         )
 
     async def async_step_add_first_user_body_metrics(
@@ -522,6 +570,25 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=_body_metrics_schema(unit),
         )
 
+    async def async_step_add_first_user_bmi(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Height-only body-metrics step for the broadcast (weight-only) variant."""
+        unit = self.context[CONF_SCALE_DISPLAY_UNIT]
+        if user_input is not None:
+            height_cm = _coerce_height_cm(unit, user_input)
+            return self._create_entry_with_first_user(
+                user_name=self.context[CONF_USER_NAME],
+                person_entity=self.context.get(CONF_PERSON_ENTITY),
+                mobile_services=self.context.get(CONF_MOBILE_NOTIFY_SERVICES, []),
+                body_metrics_enabled=True,
+                body_metrics_fields={CONF_HEIGHT: height_cm},
+            )
+        return self.async_show_form(
+            step_id="add_first_user_bmi",
+            data_schema=_bmi_only_schema(unit),
+        )
+
     def _create_entry_with_first_user(
         self,
         user_name: str,
@@ -546,6 +613,7 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             title=self.context["title_placeholders"]["name"],
             data={
                 CONF_SCALE_DISPLAY_UNIT: self.context[CONF_SCALE_DISPLAY_UNIT],
+                CONF_PROTOCOL: self.context.get(CONF_PROTOCOL, PROTOCOL_QN),
                 CONF_USER_PROFILES: [user_profile],
             },
         )
@@ -570,6 +638,7 @@ class ScaleOptionsFlow(OptionsFlow):
         self.display_unit = config_entry.data.get(
             CONF_SCALE_DISPLAY_UNIT, UnitOfMass.KILOGRAMS
         )
+        self.protocol = config_entry.data.get(CONF_PROTOCOL, PROTOCOL_QN)
         self.history_retention_days = config_entry.data.get(
             CONF_HISTORY_RETENTION_DAYS, HISTORY_RETENTION_DAYS
         )
@@ -591,6 +660,12 @@ class ScaleOptionsFlow(OptionsFlow):
     async def async_step_add_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        is_aabb = self.protocol == PROTOCOL_AABB
+        metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
+        warning = (
+            "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
+        ) if is_aabb else ""
+
         if user_input is not None:
             user_name = user_input[CONF_USER_NAME]
             person_entity = user_input.get(CONF_PERSON_ENTITY)
@@ -608,16 +683,19 @@ class ScaleOptionsFlow(OptionsFlow):
             if errors:
                 return self.async_show_form(
                     step_id="add_user",
-                    data_schema=_user_basic_schema(self.hass),
+                    data_schema=_user_basic_schema(self.hass, is_aabb=is_aabb),
                     errors=errors,
+                    description_placeholders={"experimental_warning": warning},
                 )
-            body_metrics = user_input.get(CONF_BODY_METRICS_ENABLED, False)
+            body_metrics = user_input.get(metrics_key, False)
             if body_metrics:
                 self.context[CONF_USER_NAME] = user_name
                 self.context[CONF_PERSON_ENTITY] = person_entity
                 self.context[CONF_MOBILE_NOTIFY_SERVICES] = user_input.get(
                     CONF_MOBILE_NOTIFY_SERVICES, []
                 )
+                if self.protocol == PROTOCOL_AABB:
+                    return await self.async_step_add_user_bmi()
                 return await self.async_step_add_user_body_metrics()
             new_user_id = _create_user_id(user_name, self.user_profiles)
             if not _validate_user_id_unique(new_user_id, self.user_profiles):
@@ -637,7 +715,9 @@ class ScaleOptionsFlow(OptionsFlow):
             await self._save_profiles(self.user_profiles + [user_profile])
             return self.async_create_entry(title="", data={})
         return self.async_show_form(
-            step_id="add_user", data_schema=_user_basic_schema(self.hass)
+            step_id="add_user",
+            data_schema=_user_basic_schema(self.hass, is_aabb=is_aabb),
+            description_placeholders={"experimental_warning": warning},
         )
 
     async def async_step_add_user_body_metrics(
@@ -677,6 +757,38 @@ class ScaleOptionsFlow(OptionsFlow):
             data_schema=_body_metrics_schema(self.display_unit),
         )
 
+    async def async_step_add_user_bmi(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Height-only body-metrics step for the broadcast (weight-only) variant."""
+        if user_input is not None:
+            user_name = self.context[CONF_USER_NAME]
+            if not _validate_user_name_not_empty(user_name):
+                return self.async_abort(reason="invalid_user_name")
+            height_cm = _coerce_height_cm(self.display_unit, user_input)
+            new_user_id = _create_user_id(user_name, self.user_profiles)
+            if not _validate_user_id_unique(new_user_id, self.user_profiles):
+                return self.async_abort(reason="user_id_generation_failed")
+            now = datetime.now().isoformat()
+            user_profile = {
+                CONF_USER_ID: new_user_id,
+                CONF_USER_NAME: user_name,
+                CONF_PERSON_ENTITY: self.context.get(CONF_PERSON_ENTITY),
+                CONF_MOBILE_NOTIFY_SERVICES: self.context.get(
+                    CONF_MOBILE_NOTIFY_SERVICES, []
+                ),
+                CONF_BODY_METRICS_ENABLED: True,
+                CONF_HEIGHT: height_cm,
+                CONF_CREATED_AT: now,
+                CONF_UPDATED_AT: now,
+            }
+            await self._save_profiles(self.user_profiles + [user_profile])
+            return self.async_create_entry(title="", data={})
+        return self.async_show_form(
+            step_id="add_user_bmi",
+            data_schema=_bmi_only_schema(self.display_unit),
+        )
+
     # -- Edit user ----------------------------------------------------------
 
     async def async_step_edit_user(
@@ -696,6 +808,12 @@ class ScaleOptionsFlow(OptionsFlow):
     async def async_step_edit_user_details(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        is_aabb = self.protocol == PROTOCOL_AABB
+        metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
+        warning = (
+            "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
+        ) if is_aabb else ""
+
         selected_user_id = self.context["selected_user_id"]
         user_index = next(
             i
@@ -723,10 +841,11 @@ class ScaleOptionsFlow(OptionsFlow):
             if errors:
                 return self.async_show_form(
                     step_id="edit_user_details",
-                    data_schema=_user_basic_schema(self.hass, defaults=current_user),
+                    data_schema=_user_basic_schema(self.hass, defaults=current_user, is_aabb=is_aabb),
                     errors=errors,
+                    description_placeholders={"experimental_warning": warning},
                 )
-            body_metrics_enabled = user_input.get(CONF_BODY_METRICS_ENABLED, False)
+            body_metrics_enabled = user_input.get(metrics_key, False)
             currently_enabled = current_user.get(CONF_BODY_METRICS_ENABLED, False)
             if not body_metrics_enabled and currently_enabled:
                 # Remove body-metric entities for this user
@@ -744,6 +863,8 @@ class ScaleOptionsFlow(OptionsFlow):
                         entity_reg.async_remove(entity_id)
             if body_metrics_enabled:
                 self.context["edit_user_input"] = user_input
+                if self.protocol == PROTOCOL_AABB:
+                    return await self.async_step_edit_user_bmi()
                 return await self.async_step_edit_user_body_metrics()
             updated_user = {
                 **current_user,
@@ -770,7 +891,8 @@ class ScaleOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="edit_user_details",
-            data_schema=_user_basic_schema(self.hass, defaults=current_user),
+            data_schema=_user_basic_schema(self.hass, defaults=current_user, is_aabb=is_aabb),
+            description_placeholders={"experimental_warning": warning},
         )
 
     async def async_step_edit_user_body_metrics(
@@ -810,6 +932,40 @@ class ScaleOptionsFlow(OptionsFlow):
         return self.async_show_form(
             step_id="edit_user_body_metrics",
             data_schema=_body_metrics_schema(self.display_unit, defaults=current_user),
+        )
+
+    async def async_step_edit_user_bmi(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Height-only edit step for the broadcast (weight-only) variant."""
+        selected_user_id = self.context["selected_user_id"]
+        user_index = next(
+            i
+            for i, u in enumerate(self.user_profiles)
+            if u[CONF_USER_ID] == selected_user_id
+        )
+        current_user = self.user_profiles[user_index]
+        if user_input is not None:
+            height_cm = _coerce_height_cm(self.display_unit, user_input)
+            basic_info = self.context["edit_user_input"]
+            updated_user = {
+                **current_user,
+                CONF_USER_NAME: basic_info[CONF_USER_NAME],
+                CONF_PERSON_ENTITY: basic_info.get(CONF_PERSON_ENTITY),
+                CONF_MOBILE_NOTIFY_SERVICES: basic_info.get(
+                    CONF_MOBILE_NOTIFY_SERVICES, []
+                ),
+                CONF_BODY_METRICS_ENABLED: True,
+                CONF_HEIGHT: height_cm,
+                CONF_UPDATED_AT: datetime.now().isoformat(),
+            }
+            updated_profiles = list(self.user_profiles)
+            updated_profiles[user_index] = updated_user
+            await self._save_profiles(updated_profiles)
+            return self.async_create_entry(title="", data={})
+        return self.async_show_form(
+            step_id="edit_user_bmi",
+            data_schema=_bmi_only_schema(self.display_unit, defaults=current_user),
         )
 
     # -- Remove user --------------------------------------------------------

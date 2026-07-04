@@ -52,7 +52,9 @@ from renpho_escs20m import (
     ProfileResolver,
     RESISTANCE_1_KEY,
     RESISTANCE_2_KEY,
-    RenphoESCS20MScale,
+    RenphoAABBScale,
+    RenphoQNScale,
+    RenphoScale,
     ScaleData,
     Sex,
     WEIGHT_KEY,
@@ -78,6 +80,8 @@ from .const import (
     DOMAIN,
     HISTORY_RETENTION_DAYS,
     MAX_HISTORY_SIZE,
+    PROTOCOL_AABB,
+    PROTOCOL_QN,
     parse_notify_service,
 )
 
@@ -750,6 +754,7 @@ class ScaleDataUpdateCoordinator:
         history_retention_days: int = HISTORY_RETENTION_DAYS,
         max_history_size: int = MAX_HISTORY_SIZE,
         enable_library_logging: bool = False,
+        protocol: str = PROTOCOL_QN,
     ) -> None:
         """Construct the coordinator.
 
@@ -761,10 +766,14 @@ class ScaleDataUpdateCoordinator:
             router_state: Optional `WeightRouter.to_dict()` payload to restore.
             history_retention_days: Per-user history retention window.
             max_history_size: Per-user maximum history size.
+            protocol: BLE protocol the scale speaks (`PROTOCOL_QN` for the
+                connectable GATT variant, `PROTOCOL_AABB` for the broadcast-only
+                weight-only variant). Selects the library scale class.
         """
         self.hass = hass
         self.address = address
         self.device_name = device_name
+        self._protocol = protocol
         self._user_profiles = deepcopy(user_profiles)
         # Note: dict values are aliased into _user_profiles. Mutate user-profile
         # dicts via one of these collections only, never via both, to avoid
@@ -776,8 +785,9 @@ class ScaleDataUpdateCoordinator:
         self._user_callbacks: dict[str, list[Callable[[ScaleData], None]]] = {}
         self._diagnostic_listeners: list[Callable[[], None]] = []
 
-        # BLE client; created on demand by `async_start`.
-        self._scale: RenphoESCS20MScale | None = None
+        # BLE client; created on demand by `async_start`. Concrete type depends
+        # on `self._protocol` (RenphoQNScale or RenphoAABBScale).
+        self._scale: RenphoScale | None = None
         self._enable_library_logging = enable_library_logging
         # Unsubscribe handle for the HA `core_config_updated` listener that
         # re-renders cached `timestamp_display` values when relevant settings
@@ -1160,21 +1170,35 @@ class ScaleDataUpdateCoordinator:
                 _LOGGER.exception("Error stopping existing scale client")
             self._scale = None
         scanner = await self._get_bluetooth_scanner()
-        profile_arg = self._select_library_mode_argument()
-        self._scale = RenphoESCS20MScale(
-            address=self.address,
-            notification_callback=self._on_scale_data,
-            display_unit=self._display_unit,
-            profile=profile_arg,
-            bleak_scanner_backend=scanner,
-            # The scale's BLE chip continues to emit straggler advertisements
-            # for a few seconds after a successful measurement while it's
-            # spinning down — but it rejects fresh connections during that
-            # window. Without a cooldown, each straggler ad triggers a futile
-            # 10-retry connect cycle that ends with `BleakOutOfConnectionSlotsError`.
-            cooldown_seconds=POST_MEASUREMENT_COOLDOWN_SECONDS,
-            logger=self._library_logger(),
-        )
+        if self._protocol == PROTOCOL_AABB:
+            # Broadcast-only variant: weight is read from BLE advertisements.
+            # No GATT connection, so none of the profile/cooldown/connect-retry
+            # knobs apply. Weight-history routing still happens post-hoc in
+            # `_on_scale_data`; there is no body composition to resolve at
+            # weigh time, so no ProfileResolver is needed.
+            self._scale = RenphoAABBScale(
+                address=self.address,
+                notification_callback=self._on_scale_data,
+                display_unit=self._display_unit,
+                bleak_scanner_backend=scanner,
+                logger=self._library_logger(),
+            )
+        else:
+            profile_arg = self._select_library_mode_argument()
+            self._scale = RenphoQNScale(
+                address=self.address,
+                notification_callback=self._on_scale_data,
+                display_unit=self._display_unit,
+                profile=profile_arg,
+                bleak_scanner_backend=scanner,
+                # The scale's BLE chip continues to emit straggler advertisements
+                # for a few seconds after a successful measurement while it's
+                # spinning down — but it rejects fresh connections during that
+                # window. Without a cooldown, each straggler ad triggers a futile
+                # 10-retry connect cycle that ends with `BleakOutOfConnectionSlotsError`.
+                cooldown_seconds=POST_MEASUREMENT_COOLDOWN_SECONDS,
+                logger=self._library_logger(),
+            )
         await self._scale.async_start()
 
     @callback
@@ -1991,12 +2015,15 @@ class ScaleDataUpdateCoordinator:
         """Push the scale's ``firmware_revision`` to ``DeviceInfo.sw_version``.
 
         No-op if the library hasn't read the value yet, or if it already
-        matches what the device registry has.
+        matches what the device registry has. The broadcast-only
+        (``RenphoAABBScale``) variant never connects and exposes no
+        ``firmware_revision`` attribute, so ``getattr`` keeps this a safe no-op
+        there.
         """
         scale = self._scale
         if scale is None:
             return
-        firmware = scale.firmware_revision
+        firmware = getattr(scale, "firmware_revision", None)
         if not firmware:
             return
         registry = _get_device_registry(self.hass)

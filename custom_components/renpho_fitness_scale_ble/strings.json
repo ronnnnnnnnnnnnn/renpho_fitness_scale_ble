@@ -19,12 +19,13 @@
       },
       "add_first_user": {
         "title": "Add the first user",
-        "description": "Configure the user this scale is primarily used by. You can add more users later from the integration's Configure menu.",
+        "description": "Configure the user this scale is primarily used by. You can add more users later from the integration's Configure menu.{experimental_warning}",
         "data": {
           "name": "User name",
           "person_entity": "Person entity (optional)",
           "mobile_notify_services": "Mobile devices for notifications",
-          "body_metrics_enabled": "Calculate body composition metrics"
+          "body_metrics_enabled": "Calculate body composition metrics",
+          "bmi_enabled": "Calculate BMI"
         },
         "data_description": {
           "person_entity": "Only used when this scale has multiple users, to skip this user when their linked person is away from home at weigh-in time. Requires the person to have a working device tracker (e.g. their phone via the Home Assistant companion app). Leave blank to match by weight only."
@@ -45,6 +46,15 @@
         "data_description": {
           "athlete": "Switches the scale to its athlete-tuned body fat calculation curve. Recommended for users who train regularly and have above-average muscle mass.",
           "use_alternative_algorithm": "Try this if the body fat percentage doesn't match what you see in the Renpho app."
+        }
+      },
+      "add_first_user_bmi": {
+        "title": "BMI",
+        "description": "Enter height to calculate BMI — no other body-composition metrics are available for this scale.",
+        "data": {
+          "height": "Height",
+          "feet": "Height (feet)",
+          "inches": "Height (inches)"
         }
       }
     },
@@ -75,11 +85,13 @@
       },
       "add_user": {
         "title": "Add user",
+        "description": "{experimental_warning}",
         "data": {
           "name": "User name",
           "person_entity": "Person entity (optional)",
           "mobile_notify_services": "Mobile devices for notifications",
-          "body_metrics_enabled": "Calculate body composition metrics"
+          "body_metrics_enabled": "Calculate body composition metrics",
+          "bmi_enabled": "Calculate BMI"
         },
         "data_description": {
           "person_entity": "Only used when this scale has multiple users, to skip this user when their linked person is away from home at weigh-in time. Requires the person to have a working device tracker (e.g. their phone via the Home Assistant companion app). Leave blank to match by weight only."
@@ -101,6 +113,15 @@
           "use_alternative_algorithm": "Try this if the body fat percentage doesn't match what you see in the Renpho app."
         }
       },
+      "add_user_bmi": {
+        "title": "BMI",
+        "description": "Enter height to calculate BMI — no other body-composition metrics are available for this scale.",
+        "data": {
+          "height": "Height",
+          "feet": "Height (feet)",
+          "inches": "Height (inches)"
+        }
+      },
       "edit_user": {
         "title": "Edit user",
         "data": {
@@ -109,11 +130,13 @@
       },
       "edit_user_details": {
         "title": "Edit user details",
+        "description": "{experimental_warning}",
         "data": {
           "name": "User name",
           "person_entity": "Person entity (optional)",
           "mobile_notify_services": "Mobile devices for notifications",
-          "body_metrics_enabled": "Calculate body composition metrics"
+          "body_metrics_enabled": "Calculate body composition metrics",
+          "bmi_enabled": "Calculate BMI"
         },
         "data_description": {
           "person_entity": "Only used when this scale has multiple users, to skip this user when their linked person is away from home at weigh-in time. Requires the person to have a working device tracker (e.g. their phone via the Home Assistant companion app). Leave blank to match by weight only."
@@ -129,6 +152,15 @@
           "inches": "Height (inches)",
           "athlete": "Athlete mode",
           "use_alternative_algorithm": "Use alternative body fat algorithm"
+        }
+      },
+      "edit_user_bmi": {
+        "title": "BMI",
+        "description": "Enter height to calculate BMI — no other body-composition metrics are available for this scale.",
+        "data": {
+          "height": "Height",
+          "feet": "Height (feet)",
+          "inches": "Height (inches)"
         }
       },
       "remove_user": {
