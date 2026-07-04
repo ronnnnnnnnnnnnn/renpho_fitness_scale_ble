@@ -323,7 +323,9 @@ def _bmi_only_schema(display_unit: str, defaults: dict | None = None) -> vol.Sch
     return vol.Schema(_height_fields(display_unit, defaults or {}))
 
 
-def _user_basic_schema(hass, defaults: dict | None = None, is_aabb: bool = False) -> vol.Schema:
+def _user_basic_schema(
+    hass, defaults: dict | None = None, is_aabb: bool = False
+) -> vol.Schema:
     """Schema for the basic user fields (name, person, mobile, body_metrics_enabled)."""
     defaults = defaults or {}
     schema: dict[Any, Any] = {
@@ -511,8 +513,12 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         is_aabb = self.context.get(CONF_PROTOCOL) == PROTOCOL_AABB
         metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
         warning = (
-            "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
-        ) if is_aabb else ""
+            (
+                "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
+            )
+            if is_aabb
+            else ""
+        )
 
         if user_input is not None:
             user_name = user_input[CONF_USER_NAME]
@@ -673,8 +679,12 @@ class ScaleOptionsFlow(OptionsFlow):
         is_aabb = self.protocol == PROTOCOL_AABB
         metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
         warning = (
-            "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
-        ) if is_aabb else ""
+            (
+                "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
+            )
+            if is_aabb
+            else ""
+        )
 
         if user_input is not None:
             user_name = user_input[CONF_USER_NAME]
@@ -821,8 +831,12 @@ class ScaleOptionsFlow(OptionsFlow):
         is_aabb = self.protocol == PROTOCOL_AABB
         metrics_key = "bmi_enabled" if is_aabb else CONF_BODY_METRICS_ENABLED
         warning = (
-            "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
-        ) if is_aabb else ""
+            (
+                "\n\n⚠️ **Experimental:** This scale uses the broadcast-only (AABB) protocol which only supports weight and BMI."
+            )
+            if is_aabb
+            else ""
+        )
 
         selected_user_id = self.context["selected_user_id"]
         user_index = next(
@@ -851,7 +865,9 @@ class ScaleOptionsFlow(OptionsFlow):
             if errors:
                 return self.async_show_form(
                     step_id="edit_user_details",
-                    data_schema=_user_basic_schema(self.hass, defaults=current_user, is_aabb=is_aabb),
+                    data_schema=_user_basic_schema(
+                        self.hass, defaults=current_user, is_aabb=is_aabb
+                    ),
                     errors=errors,
                     description_placeholders={"experimental_warning": warning},
                 )
@@ -901,7 +917,9 @@ class ScaleOptionsFlow(OptionsFlow):
 
         return self.async_show_form(
             step_id="edit_user_details",
-            data_schema=_user_basic_schema(self.hass, defaults=current_user, is_aabb=is_aabb),
+            data_schema=_user_basic_schema(
+                self.hass, defaults=current_user, is_aabb=is_aabb
+            ),
             description_placeholders={"experimental_warning": warning},
         )
 
