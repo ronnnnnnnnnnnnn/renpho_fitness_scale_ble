@@ -25,7 +25,10 @@
     {
       "connectable": false,
       "manufacturer_id": 65535,
-      "manufacturer_data_start": [170, 187]
+      "manufacturer_data_start": [
+        170,
+        187
+      ]
     }
   ],
   "codeowners": [
@@ -43,5 +46,5 @@
     "renpho-escs20m==0.4.0",
     "multi-user-scale-core==0.1.2"
   ],
-  "version": "0.3.0"
+  "version": "0.3.0b1"
 }
