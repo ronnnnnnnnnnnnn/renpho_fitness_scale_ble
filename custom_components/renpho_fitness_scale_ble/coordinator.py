@@ -1172,9 +1172,12 @@ class ScaleDataUpdateCoordinator:
         scanner = await self._get_bluetooth_scanner()
         if self._protocol == PROTOCOL_AABB:
             # Broadcast-only variant: weight is read from BLE advertisements.
-            # No GATT connection, so none of the profile/cooldown/connect-retry
-            # knobs apply. Weight-history routing still happens post-hoc in
-            # `_on_scale_data`; there is no body composition to resolve at
+            # No GATT connection, so the profile/connect-retry knobs don't
+            # apply. The advertisement cooldown (one callback per weigh-in,
+            # suppressing the re-broadcast burst of the final frame) is left
+            # at the library's default — burst length is hardware knowledge
+            # the library owns. Weight-history routing still happens post-hoc
+            # in `_on_scale_data`; there is no body composition to resolve at
             # weigh time, so no ProfileResolver is needed.
             self._scale = RenphoAABBScale(
                 address=self.address,
@@ -1191,6 +1194,10 @@ class ScaleDataUpdateCoordinator:
                 display_unit=self._display_unit,
                 profile=profile_arg,
                 bleak_scanner_backend=scanner,
+                # Drain the scale's store of offline measurements (readings
+                # taken while HA was down) each session. Delivery deletes
+                # them from the scale.
+                clear_stored_measurements=True,
                 # The scale's BLE chip continues to emit straggler advertisements
                 # for a few seconds after a successful measurement while it's
                 # spinning down — but it rejects fresh connections during that

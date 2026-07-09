@@ -34,8 +34,9 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale — a
 
 ## Notes
 
-- The scale computes body fat *on-device*. The integration commits the user's profile (sex, age, height, athlete flag, algorithm choice) to the scale during the ~2-second measurement window — that's how the scale knows which body to compute against. When the resolver can't pick a single user confidently, the scale falls back to weight-only and the integration computes body fat **off-scale** when you later attribute the measurement to a specific user.
-- This integration uses the [renpho-escs20m](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m) Python library for BLE communication and [multi-user-scale-core](https://github.com/ronnnnnnnnnnnnn/multi-user-scale-core) for the multi-user routing logic.
+- The integration uses the [renpho-escs20m](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m) Python library for BLE communication and [multi-user-scale-core](https://github.com/ronnnnnnnnnnnnn/multi-user-scale-core) for the multi-user routing logic.
+- The integration clears the scale's internal store of *offline* readings (weigh-ins taken while Home Assistant wasn't listening, e.g. during an HA restart) each time it connects. Those readings are not imported into Home Assistant, and because delivery deletes them from the scale, they won't show up in the official Renpho app either.
+- **ESCS20MA2 only**: The scale computes body fat *on-device*. The integration commits the user's profile (sex, age, height, athlete flag, algorithm choice) to the scale during the ~2-second measurement window — that's how the scale knows which body to compute against. When the resolver can't pick a single user confidently, the scale falls back to weight-only and the integration computes body fat **off-scale** when you later attribute the measurement to a specific user.
 
 ## Supported Devices
 
@@ -53,11 +54,15 @@ Confirmed-working:
 | ES-32MD        | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
 
 
-Experimental — broadcast subvariant (weight only):
+Experimental:
 
-| Marketed model | HVIN | FCC ID            |
-|----------------|------|-------------------|
-| ES-CS20M       | -    | `2APXUES-CS20M`   |
+| Marketed model | HVIN | FCC ID            | Protocol               |
+|----------------|------|-------------------|------------------------|
+| Arboleaf CS20M | -    | `2ANDX-CS20M`     | QN-series (FFE0 GATT)  |
+| ES-CS20M       | -    | `2APXUES-CS20M`   | `0xaabb` (broadcast)   |
+
+- **Arboleaf CS20M** — QN-series hardware ships the same wire protocol on two GATT service layouts, and the integration handles both: the FFF0 layout used by the Renpho models above, and the FFE0 layout seen on some other QN scales, like this one (and some older Renpho units, e.g. certain ES-30M revisions). Full feature set.
+- **ES-CS20M (FCC ID `2APXUES-CS20M`)** — a **non-connectable** subvariant: it broadcasts weight in its BLE advertisements rather than connecting over GATT, using a different (`0xaabb`) protocol. Weight-only support (no body composition; BMI can still be derived from height, and the display unit can be observed but not set).
 
 Known-incompatible:
 
@@ -67,9 +72,9 @@ Known-incompatible:
 
 **How to find your HVIN:** look at the regulatory sticker on the back of the scale. Most stickers have a dedicated `HVIN:` field alongside the FCC ID. Some stickers don't — in that case, look at the trailing portion of the **FCC ID** (`2A26P-<code>`), which encodes the same identifier. The trailing revision suffix (`A2`, `B2`, `N`, or absent altogether) is what matters. If your HVIN or FCC ID matches a confirmed-working entry above, this integration is likely to work; if it matches a known-incompatible entry it's unlikely to work; if it doesn't match an entry in either table, try it out and report back on the issue tracker. (Note: neither HVIN nor model number is readable over BLE, so the device code can't be shown on the Home Assistant device card — you have to read it off the sticker.)
 
-> This integration may also work with other QN-Scale non-Renpho branded scales utilizing the same protocol. Feel free to report compatibility results on the [issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
+> This integration may also work with other QN-Scale non-Renpho branded scales utilizing the same protocol (on either GATT layout). Feel free to report compatibility results on the [issue tracker](https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues).
 
-If your scale isn't in either table above, please open an issue with the marketed model, HVIN (including the revision suffix), and whether it works. If you'd like to actively help diagnose protocol compatibility for an unsupported HVIN, see [Diagnosing Protocol Compatibility](#diagnosing-protocol-compatibility). The same compatibility list is mirrored in the [library README's compatibility section](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m#device-compatibility) — that's where new entries are added first, so check there if this list looks out of date.
+If your scale isn't in any of the tables above, please open an issue with the marketed model, HVIN (including the revision suffix), and whether it works. If you'd like to actively help diagnose protocol compatibility for an unsupported HVIN, see [Diagnosing Protocol Compatibility](#diagnosing-protocol-compatibility). The same compatibility list is mirrored in the [library README's compatibility section](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m#device-compatibility) — that's where new entries are added first, so check there if this list looks out of date.
 
 ## Installation
 
