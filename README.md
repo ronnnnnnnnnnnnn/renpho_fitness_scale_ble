@@ -105,6 +105,10 @@ Requires Home Assistant **2026.1.0+** and Python 3.13+ (matches Home Assistant's
 3. Confirm the discovered device and pick your preferred display unit (kg or lb).
 4. Add the first user profile (see options below). Repeat from **Configure** to add more users.
 
+### Adding a Device the Integration Doesn't Recognize
+
+Devices the integration can't positively identify are never auto-discovered — no discovery card is shown for them, and they can only be added through the manual picker described here. The manual "Add Integration" picker doesn't hide devices it can't identify — it labels them by how confident it is: `[QN device — unknown model]` for a scale-shaped advertisement whose exact model hasn't been seen before, or `[unknown device]` for anything else that isn't obviously non-scale hardware. Picking one of these asks you to choose a protocol yourself: **QN** covers most Renpho models and is worth trying first, while **Broadcast** is for non-connectable, weight-only scales that never accept a GATT connection. There's no guarantee an unrecognized device will work — some Renpho hardware revisions speak a protocol this integration doesn't understand at all — but many "unknown" scales turn out to be already-supported models the identifier registry just hasn't seen yet. If you try one, please [open an issue](#reporting-issues) with debug logs enabled: the log carries the scale's model identifier, and every report that gets added to the registry means the next person with that same scale sees it correctly classified from the start.
+
 ### User Profile Configuration Options
 
 When adding or editing user profiles (**Settings → Devices & Services → Renpho Fitness Scale BLE → Configure**), you can configure the following options:

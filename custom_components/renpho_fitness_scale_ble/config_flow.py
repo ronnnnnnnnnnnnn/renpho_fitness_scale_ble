@@ -14,6 +14,7 @@ import voluptuous as vol
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfo,
     async_discovered_service_info,
+    async_rediscover_address,
 )
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import (
@@ -30,7 +31,11 @@ from homeassistant.helpers import (
 )
 from homeassistant.util.unit_conversion import DistanceConverter
 
-from renpho_escs20m.xaabb.protocol import SUPPORTED_COMPANY_IDS as _AABB_COMPANY_IDS
+from renpho_escs20m import (
+    QN_MANUFACTURER_ID,
+    detect_protocol,
+    is_qn_frame,
+)
 
 from .const import (
     CONF_ATHLETE,
@@ -121,8 +126,12 @@ _KNOWN_NON_SCALE_SERVICE_UUIDS: frozenset[str] = frozenset(
 )
 
 
-# First two manufacturer-data bytes that mark a 0xaabb broadcast frame.
-_AABB_MAGIC = b"\xaa\xbb"
+# Offered when the library cannot classify a device: the user picks which
+# protocol to try. Keys are the persisted CONF_PROTOCOL values.
+_PROTOCOL_CHOICES: dict[str, str] = {
+    PROTOCOL_QN: "QN — connectable scale (most Renpho models; recommended first try)",
+    PROTOCOL_AABB: "Broadcast — non-connectable scale (weight broadcast only)",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -130,18 +139,50 @@ _AABB_MAGIC = b"\xaa\xbb"
 # ---------------------------------------------------------------------------
 
 
-def _detect_protocol(info: BluetoothServiceInfo) -> str:
-    """Classify a discovered advertisement by BLE protocol.
+def _detect_protocol(info: BluetoothServiceInfo) -> str | None:
+    """Classify a discovered advertisement by BLE protocol (library classifier).
 
-    The broadcast-only subvariant (``PROTOCOL_AABB``) is non-connectable and
-    carries its weight in manufacturer data under a generic company id,
-    prefixed with the ``0xaabb`` magic bytes. Everything else — including the
-    connectable QN-series scales — is treated as ``PROTOCOL_QN``.
+    Returns None when the library cannot classify the device.
     """
-    for company_id, payload in (info.manufacturer_data or {}).items():
-        if company_id in _AABB_COMPANY_IDS and bytes(payload[:2]) == _AABB_MAGIC:
-            return PROTOCOL_AABB
-    return PROTOCOL_QN
+    protocol = detect_protocol(info.name, info.manufacturer_data, info.address)
+    return protocol.value if protocol is not None else None
+
+
+def _manual_picker_tier(info: BluetoothServiceInfo) -> int | None:
+    """Classify a discovered device for the manual picker.
+
+    Returns the admission tier, or None to hide the device:
+      1 — classified protocol (AABB frame, known QN identifier, or matching
+          name/OUI)
+      2 — valid QN frame with an unrecognized model identifier (unknown
+          QN-platform scales are never hidden)
+      3 — any other device not categorically a non-scale (denylists), so
+          users can try unknown scales; they configure through the explicit
+          protocol chooser
+    """
+    if _detect_protocol(info) is not None:
+        return 1
+    payload = info.manufacturer_data.get(QN_MANUFACTURER_ID)
+    if payload is not None and is_qn_frame(payload, info.address):
+        return 2
+    if _KNOWN_NON_SCALE_MFR_IDS & info.manufacturer_data.keys():
+        return None
+    if _KNOWN_NON_SCALE_SERVICE_UUIDS & set(info.service_uuids or []):
+        return None
+    return 3
+
+
+def _picker_label(title_text: str, info: BluetoothServiceInfo) -> str:
+    """Annotate a manual-picker entry with what we know about the device."""
+    protocol = _detect_protocol(info)
+    if protocol == PROTOCOL_QN:
+        return f"{title_text} [QN scale]"
+    if protocol == PROTOCOL_AABB:
+        return f"{title_text} [broadcast scale]"
+    payload = info.manufacturer_data.get(QN_MANUFACTURER_ID)
+    if payload is not None and is_qn_frame(payload, info.address):
+        return f"{title_text} [QN device — unknown model]"
+    return f"{title_text} [unknown device]"
 
 
 def _create_user_id(display_name: str, existing_profiles: list[dict]) -> str:
@@ -397,13 +438,26 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_bluetooth(self, info: BluetoothServiceInfo) -> FlowResult:
         await self.async_set_unique_id(info.address)
         self._abort_if_unique_id_configured()
-        self.context[CONF_PROTOCOL] = _detect_protocol(info)
+        protocol = _detect_protocol(info)
+        if protocol is None:
+            # The advertisement matched the manifest's (deliberately broad)
+            # matchers but the library can't classify it: don't offer a
+            # discovery card for a device we're not sure about. It stays
+            # reachable through the manual picker's protocol chooser. Clear
+            # the match history first so a later, cleaner advertisement can
+            # re-trigger discovery (otherwise the address stays suppressed
+            # until HA restarts).
+            async_rediscover_address(self.hass, info.address)
+            return self.async_abort(reason="not_supported")
+        self.context[CONF_PROTOCOL] = protocol
         self.context["title_placeholders"] = {"name": _title(info)}
         return await self.async_step_bluetooth_confirm()
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        # Unclassified devices never reach this step (async_step_bluetooth
+        # aborts them), so the protocol in context is always set here.
         if user_input is not None:
             self.context[CONF_SCALE_DISPLAY_UNIT] = user_input[CONF_SCALE_DISPLAY_UNIT]
             return await self.async_step_add_first_user()
@@ -435,9 +489,14 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 "name": self._discovered_devices[address].title
             }
             self.context[CONF_SCALE_DISPLAY_UNIT] = user_input[CONF_SCALE_DISPLAY_UNIT]
-            self.context[CONF_PROTOCOL] = _detect_protocol(
+            protocol = _detect_protocol(
                 self._discovered_devices[address].discovery_info
             )
+            self.context[CONF_PROTOCOL] = protocol
+            if protocol is None:
+                # Unknown device (picker tier 2/3): configuring it is an
+                # explicit experiment — let the user pick the protocol.
+                return await self.async_step_choose_protocol()
             return await self.async_step_add_first_user()
 
         current_addresses = self._async_current_ids()
@@ -458,28 +517,10 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 info.service_data,
                 info.rssi,
             )
-            if not info.connectable and _detect_protocol(info) != PROTOCOL_AABB:
+            if _manual_picker_tier(info) is None:
                 _LOGGER.debug(
-                    "  → skipped: non-connectable advertisement (beacons can't "
-                    "be scales, and it's not a 0xaabb broadcast scale)"
-                )
-                continue
-            excluded_mfr = _KNOWN_NON_SCALE_MFR_IDS & info.manufacturer_data.keys()
-            if excluded_mfr:
-                _LOGGER.debug(
-                    "  → skipped: manufacturer ID(s) %s are on the known "
-                    "non-scale OEM list",
-                    sorted(excluded_mfr),
-                )
-                continue
-            excluded_svc = _KNOWN_NON_SCALE_SERVICE_UUIDS & set(
-                info.service_uuids or []
-            )
-            if excluded_svc:
-                _LOGGER.debug(
-                    "  → skipped: advertises service UUID(s) %s assigned to "
-                    "a non-scale device class",
-                    sorted(excluded_svc),
+                    "  → skipped: categorically a non-scale device "
+                    "(manufacturer ID or service UUID on the denylist)"
                 )
                 continue
             self._discovered_devices[info.address] = Discovery(_title(info), info)
@@ -487,7 +528,16 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
-        titles = {a: d.title for a, d in self._discovered_devices.items()}
+        titles = {
+            address: _picker_label(discovery.title, discovery.discovery_info)
+            for address, discovery in sorted(
+                self._discovered_devices.items(),
+                key=lambda item: (
+                    _manual_picker_tier(item[1].discovery_info) or 9,
+                    item[1].title,
+                ),
+            )
+        }
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -500,6 +550,25 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                             UnitOfMass.KILOGRAMS: "Metric (kg)",
                             UnitOfMass.POUNDS: "Imperial (lbs)",
                         }
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_choose_protocol(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Let the user pick a protocol for a device the library can't classify."""
+        if user_input is not None:
+            self.context[CONF_PROTOCOL] = user_input[CONF_PROTOCOL]
+            return await self.async_step_add_first_user()
+        return self.async_show_form(
+            step_id="choose_protocol",
+            description_placeholders=self.context["title_placeholders"],
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PROTOCOL, default=PROTOCOL_QN): vol.In(
+                        _PROTOCOL_CHOICES
                     ),
                 }
             ),
@@ -629,7 +698,7 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             title=self.context["title_placeholders"]["name"],
             data={
                 CONF_SCALE_DISPLAY_UNIT: self.context[CONF_SCALE_DISPLAY_UNIT],
-                CONF_PROTOCOL: self.context.get(CONF_PROTOCOL, PROTOCOL_QN),
+                CONF_PROTOCOL: self.context.get(CONF_PROTOCOL) or PROTOCOL_QN,
                 CONF_USER_PROFILES: [user_profile],
             },
         )

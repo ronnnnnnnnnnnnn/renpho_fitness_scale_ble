@@ -17,6 +17,13 @@
           "scale_display_unit": "Display unit"
         }
       },
+      "choose_protocol": {
+        "title": "Choose scale protocol",
+        "description": "This device ({name}) wasn't recognized as a known Renpho scale, so its protocol couldn't be detected automatically. Pick the protocol to try — QN (connectable) works for most Renpho scales; choose Broadcast only for weight-broadcast-only models. If neither works, please open an issue on GitHub with debug logs enabled so the device can be added to the library's classifier.",
+        "data": {
+          "protocol": "Scale protocol"
+        }
+      },
       "add_first_user": {
         "title": "Add the first user",
         "description": "Configure the user this scale is primarily used by. You can add more users later from the integration's Configure menu.{experimental_warning}",
@@ -60,7 +67,8 @@
     },
     "abort": {
       "no_devices_found": "No matching devices found.",
-      "already_configured": "This scale is already configured."
+      "already_configured": "This scale is already configured.",
+      "not_supported": "This device wasn't recognized as a supported scale. If it is one, you can still add it manually: Settings > Devices & Services > Add Integration > Renpho Fitness Scale BLE."
     },
     "error": {
       "empty_user_name": "User name cannot be empty.",

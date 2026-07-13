@@ -56,6 +56,7 @@ from renpho_escs20m import (
     RenphoQNScale,
     RenphoScale,
     ScaleData,
+    ScaleProtocol,
     Sex,
     WEIGHT_KEY,
     WeightUnit,
@@ -1170,6 +1171,22 @@ class ScaleDataUpdateCoordinator:
                 _LOGGER.exception("Error stopping existing scale client")
             self._scale = None
         scanner = await self._get_bluetooth_scanner()
+
+        try:
+            ScaleProtocol(self._protocol)
+        except ValueError:
+            _LOGGER.warning(
+                "Unknown persisted protocol %r, falling back to QN",
+                self._protocol,
+            )
+            self._protocol = PROTOCOL_QN
+
+        # Not collapsed to a single `SCALE_CLASSES[...]` construction: the two
+        # constructor surfaces aren't identical (QN takes `profile`,
+        # `clear_stored_measurements`, and an explicit `cooldown_seconds`;
+        # AABB takes none of those and is left at the library's own
+        # `cooldown_seconds` default). Passing one class's kwargs to the
+        # other has broken a scale before — keep the branch.
         if self._protocol == PROTOCOL_AABB:
             # Broadcast-only variant: weight is read from BLE advertisements.
             # No GATT connection, so the profile/connect-retry knobs don't
