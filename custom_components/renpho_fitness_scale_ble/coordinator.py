@@ -737,10 +737,16 @@ class BleakScannerHybrid(BaseBleakScanner):
         )
 
     async def stop(self) -> None:
-        """Stop scanning for devices."""
-        if not self._scanning:
-            return
+        """Stop scanning for devices.
 
+        Stops every scanner in ``self._scanners`` unconditionally, not
+        gated behind ``self._scanning``. A hybrid that never finished
+        starting (e.g. ``self._scanning`` still ``False`` for any reason
+        other than the already-handled partial-failure path in
+        ``start()``) must still have its children stopped — otherwise a
+        live, subscribed scanner could again be stranded, as happened
+        before ``start()`` was fixed to clean up after itself.
+        """
         for scanner in self._scanners:
             try:
                 await scanner.stop()
@@ -1310,19 +1316,30 @@ class ScaleDataUpdateCoordinator:
         proxy reconnect triggers another full failing rebuild — and via the
         leak in ``BleakScannerHybrid.start()`` fixed above, each one adds
         more permanently-subscribed scanners on top, saturating the HA
-        event loop for hours. Now, while restarts are failing, further
-        registration events are coalesced into a single scheduled retry
-        whose delay grows exponentially (30s -> 30min cap). A successful
-        restart resets the backoff.
+        event loop for hours. The backoff now governs only the
+        *self-scheduled* retries (the timer fired by
+        ``_schedule_restart_retry``, delay growing exponentially, 30s ->
+        30min cap): a *real* registration event (a scanner actually being
+        added/removed) instead cancels any pending backoff retry and
+        restarts immediately, since the event itself could be exactly
+        what fixes the failure (e.g. an ESPHome proxy reconnecting). This
+        can't reintroduce a hot loop because registration events are
+        rate-limited by real adapter/proxy-reconnect cadence, unlike a
+        self-scheduled retry. A successful restart resets the backoff.
         """
         if self._restart_retry_unsub is not None:
-            # A backoff retry is already scheduled; coalesce this event.
+            # A backoff retry is already scheduled, but this is a real
+            # registration-change event, not the retry timer firing (the
+            # timer's own callback clears `_restart_retry_unsub` before
+            # calling back in here) - cancel the pending retry and try now.
             _LOGGER.debug(
                 "Scale client restart already scheduled (backoff after %d "
-                "failure(s)); coalescing registration-change event",
+                "failure(s)); registration-change event pre-empting it for "
+                "an immediate retry",
                 self._restart_failures,
             )
-            return
+            self._restart_retry_unsub()
+            self._restart_retry_unsub = None
         _LOGGER.debug("BT scanner registration changed; restarting scale client")
         try:
             async with self._start_lock:
