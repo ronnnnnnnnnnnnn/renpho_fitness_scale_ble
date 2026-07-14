@@ -382,13 +382,6 @@ async def async_setup_entry(
     user_profiles = entry.data.get(CONF_USER_PROFILES, [])
     display_unit = entry.data.get(CONF_SCALE_DISPLAY_UNIT, UnitOfMass.KILOGRAMS)
     protocol = entry.data.get(CONF_PROTOCOL, PROTOCOL_QN)
-    # The broadcast-only variant reports weight only — no impedance, so the
-    # only derivable body metric is BMI (from the stored height).
-    body_metric_descriptions = (
-        [d for d in BODY_METRIC_DESCRIPTIONS if d.key == "body_mass_index"]
-        if protocol == PROTOCOL_AABB
-        else BODY_METRIC_DESCRIPTIONS
-    )
 
     coordinator.set_display_unit(
         WeightUnit.KG if display_unit == UnitOfMass.KILOGRAMS else WeightUnit.LB
@@ -416,7 +409,7 @@ async def async_setup_entry(
             )
         )
         if user.get(CONF_BODY_METRICS_ENABLED, False):
-            for desc in body_metric_descriptions:
+            for desc in BODY_METRIC_DESCRIPTIONS:
                 entities.append(
                     ScaleUserSensor(
                         device_name=entry.title,

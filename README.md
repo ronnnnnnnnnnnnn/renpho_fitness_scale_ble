@@ -61,8 +61,8 @@ Experimental:
 | Arboleaf CS20M | -    | `2ANDX-CS20M`     | QN-series (FFE0 GATT)  |
 | ES-CS20M       | -    | `2APXUES-CS20M`   | `0xaabb` (broadcast)   |
 
-- **Arboleaf CS20M** — QN-series hardware ships the same wire protocol on two GATT service layouts, and the integration handles both: the FFF0 layout used by the Renpho models above, and the FFE0 layout seen on some other QN scales, like this one (and some older Renpho units, e.g. certain ES-30M revisions). Full feature set.
-- **ES-CS20M (FCC ID `2APXUES-CS20M`)** — a **non-connectable** subvariant: it broadcasts weight in its BLE advertisements rather than connecting over GATT, using a different (`0xaabb`) protocol. Weight-only support (no body composition; BMI can still be derived from height, and the display unit can be observed but not set).
+- **Arboleaf CS20M** — QN-series hardware ships the same wire protocol on two GATT service layouts, and the integration handles both: the FFF0 layout used by the Renpho models above, and the FFE0 layout seen on some other QN scales. Full feature set.
+- **ES-CS20M (FCC ID `2APXUES-CS20M`)** — a **non-connectable** subvariant: it broadcasts weight in its BLE advertisements rather than connecting over GATT, using a different (`0xaabb`) protocol. This scale transmits no bioimpedance, so its body composition calculations do not use a real impedance measurement. Rather, it's an estimate based on just weight, height, age and sex (and athlete mode).
 
 Known-incompatible:
 

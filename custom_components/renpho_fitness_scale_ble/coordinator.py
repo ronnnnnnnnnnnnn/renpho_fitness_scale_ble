@@ -63,6 +63,7 @@ from renpho_escs20m import (
 )
 
 from .const import (
+    AABB_SYNTHETIC_RESISTANCE,
     ALGORITHM_ALTERNATIVE,
     ALGORITHM_DEFAULT,
     CONF_ATHLETE,
@@ -1285,7 +1286,14 @@ class ScaleDataUpdateCoordinator:
             self._scanner_change_cb_unregister()
             self._scanner_change_cb_unregister = None
         if self._scale is not None:
-            await self._scale.async_stop()
+            try:
+                await self._scale.async_stop()
+            except Exception:
+                # Benign on teardown/restart: BlueZ can report
+                # `org.bluez.Error.Failed: No discovery started` when the scan
+                # was already stopped. Don't let it surface as an unhandled
+                # task-exception traceback.
+                _LOGGER.exception("Error stopping scale client")
             self._scale = None
 
     # ------------------------------------------------------------------
@@ -1585,13 +1593,22 @@ class ScaleDataUpdateCoordinator:
         The renpho-escs20m library documents that ``resistance_1`` is the
         correct frame value to feed ``calculate_body_fat`` for off-scale
         approximation; ``resistance_2`` is reserved for other uses.
+
+        The broadcast (AABB) variant transmits no impedance at all. When a full
+        profile (sex + birthdate) is configured for such a user, we substitute a
+        fixed synthetic resistance (``AABB_SYNTHETIC_RESISTANCE``) so the same
+        anthropometric formula runs — reproducing what the official Renpho app
+        shows. See ``const`` for why the exact value is immaterial.
         """
         profile = self._user_profiles_by_id.get(user_id)
         if not profile or not profile.get(CONF_BODY_METRICS_ENABLED):
             return None
         resistance = data.measurements.get(RESISTANCE_1_KEY)
         if resistance is None:
-            return None
+            if self._protocol == PROTOCOL_AABB:
+                resistance = AABB_SYNTHETIC_RESISTANCE
+            else:
+                return None
         height_cm = profile.get(CONF_HEIGHT)
         sex_str = profile.get(CONF_SEX, "male")
         birthdate_str = profile.get(CONF_BIRTHDATE)

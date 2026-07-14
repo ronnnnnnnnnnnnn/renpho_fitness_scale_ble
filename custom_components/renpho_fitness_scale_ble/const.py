@@ -48,6 +48,15 @@ MAX_HISTORY_SIZE = 100
 ALGORITHM_DEFAULT = 0x04
 ALGORITHM_ALTERNATIVE = 0x03
 
+# Synthetic impedance used to derive body composition for the broadcast (AABB)
+# variant, which doesn't seem to actually transmit impedance.
+# The library's body-fat algorithms are near-impedance-independent in this band anyway
+# (verified: <1pp change from R=300-900), so the exact value barely matters.
+# ~500 ohms seems to reproduce the app's numbers pretty closely, so that's what we use.
+# The result is an anthropometric estimate (weight/height/age/sex), not a real BIA
+# measurement — see the AABB notes in the README.
+AABB_SYNTHETIC_RESISTANCE = 500
+
 
 def parse_notify_service(stored: str) -> tuple[str, str]:
     """Normalize a stored notify-service value into ``(domain, name)``.
