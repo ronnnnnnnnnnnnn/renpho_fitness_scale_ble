@@ -14,7 +14,6 @@ import voluptuous as vol
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfo,
     async_discovered_service_info,
-    async_rediscover_address,
 )
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import (
@@ -427,14 +426,6 @@ class ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
         protocol = _detect_protocol(info)
         if protocol is None:
-            # The advertisement matched the manifest's (deliberately broad)
-            # matchers but the library can't classify it: don't offer a
-            # discovery card for a device we're not sure about. It stays
-            # reachable through the manual picker's protocol chooser. Clear
-            # the match history first so a later, cleaner advertisement can
-            # re-trigger discovery (otherwise the address stays suppressed
-            # until HA restarts).
-            async_rediscover_address(self.hass, info.address)
             return self.async_abort(reason="not_supported")
         self.context[CONF_PROTOCOL] = protocol
         self.context["title_placeholders"] = {"name": _title(info)}
