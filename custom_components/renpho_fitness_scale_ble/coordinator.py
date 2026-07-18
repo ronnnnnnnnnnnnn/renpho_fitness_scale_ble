@@ -1050,7 +1050,31 @@ class ScaleDataUpdateCoordinator:
                         "Unexpected error creating Bluetooth scanner: %s", ex
                     )
                     scanner = None
-            elif not native:
+            elif native:
+                # Native adapter without ESPHome proxies. Returning None here
+                # would make the scale library create its own ACTIVE
+                # BleakScanner, whose StartDiscovery races Home Assistant's
+                # shared scanner during startup (org.bluez.Error.InProgress),
+                # so entry setup keeps failing after a host reboot (issue #13).
+                # A native-only PASSIVE scanner (BlueZ AdvertisementMonitor)
+                # coexists with the shared scanner.
+                try:
+                    scanner = BleakScannerHybrid(
+                        None,
+                        None,
+                        BluetoothScanningMode.PASSIVE,
+                        [],
+                    )
+                    _LOGGER.debug("Created native-only passive scanner")
+                except BleakError as err:
+                    _LOGGER.warning("Failed to initialize Bluetooth scanner: %s", err)
+                    scanner = None
+                except Exception as ex:
+                    _LOGGER.exception(
+                        "Unexpected error creating Bluetooth scanner: %s", ex
+                    )
+                    scanner = None
+            else:
                 # No ESPHome proxies AND no native adapter = no Bluetooth available
                 raise BluetoothNotAvailableError(
                     "No Bluetooth adapter or ESPHome proxy available"
