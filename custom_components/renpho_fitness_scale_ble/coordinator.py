@@ -662,7 +662,8 @@ class BleakScannerHybrid(BaseBleakScanner):
                 self._scanners.append(self._proxy_scanner)
                 _LOGGER.debug("Proxy scanner initialized successfully")
             else:
-                _LOGGER.warning("No ESPHome clients provided for proxy scanner")
+                # Expected for the native-only passive configuration
+                _LOGGER.debug("No ESPHome clients provided for proxy scanner")
         except Exception as ex:
             _LOGGER.warning("Failed to initialize proxy scanner: %s", ex)
 
@@ -982,23 +983,32 @@ class ScaleDataUpdateCoordinator:
             # Get Bluetooth sources
             sources = manager._sources
             native = False
+            # Whether BlueZ exposes org.bluez.AdvertisementMonitorManager1
+            # for the adapter (bluetooth-adapters reports this as
+            # `passive_scan`) - i.e. whether bleak's passive scanning can
+            # work. Absent on Linux when BlueZ experimental features are
+            # disabled.
+            native_passive = False
 
             # Check for native adapters with better error handling
             try:
                 for adapter in manager._bluetooth_adapters.adapters.values():
                     if sources.get(adapter["address"]) is not None:
                         native = True
+                        native_passive = bool(adapter.get("passive_scan"))
                         _LOGGER.debug("Found native Bluetooth adapter: %s", adapter)
                         break
                 if not native:
-                    for adapter in manager._bluetooth_adapters.adapters.keys():
-                        if sources.get(adapter) is not None:
+                    for name, details in manager._bluetooth_adapters.adapters.items():
+                        if sources.get(name) is not None:
                             native = True
-                            _LOGGER.debug("Found native Bluetooth adapter: %s", adapter)
+                            native_passive = bool(details.get("passive_scan"))
+                            _LOGGER.debug("Found native Bluetooth adapter: %s", details)
                             break
             except (AttributeError, KeyError) as err:
                 _LOGGER.warning("Error checking native Bluetooth adapters: %s", err)
                 native = False
+                native_passive = False
 
             # Get ESPHome proxies with error handling
             esphome_clients: list[APIClient] = []
@@ -1050,7 +1060,7 @@ class ScaleDataUpdateCoordinator:
                         "Unexpected error creating Bluetooth scanner: %s", ex
                     )
                     scanner = None
-            elif native:
+            elif native and native_passive:
                 # Native adapter without ESPHome proxies. Returning None here
                 # would make the scale library create its own ACTIVE
                 # BleakScanner, whose StartDiscovery races Home Assistant's
@@ -1074,6 +1084,24 @@ class ScaleDataUpdateCoordinator:
                         "Unexpected error creating Bluetooth scanner: %s", ex
                     )
                     scanner = None
+            elif native:
+                # Native adapter, but BlueZ does not expose the
+                # AdvertisementMonitor API needed for passive scanning
+                # (on Linux this usually means BlueZ experimental features
+                # are disabled). Keep the previous behavior - the scale
+                # library will run its own active scanner - instead of
+                # failing hard, but explain how to get the race-free path.
+                _LOGGER.warning(
+                    "Passive scanning is not available on this adapter "
+                    "(BlueZ AdvertisementMonitor API not exposed), so the "
+                    "scale library will use its own active scanner. This "
+                    "can fail with org.bluez.Error.InProgress while Home "
+                    "Assistant's shared scanner is starting up (issue #13). "
+                    "For reliable startup, enable BlueZ experimental "
+                    "features (Experimental = true in "
+                    "/etc/bluetooth/main.conf; requires BlueZ >= 5.56 and "
+                    "kernel >= 5.10) and restart the bluetooth service"
+                )
             else:
                 # No ESPHome proxies AND no native adapter = no Bluetooth available
                 raise BluetoothNotAvailableError(
