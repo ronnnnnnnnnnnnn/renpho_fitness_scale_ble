@@ -1344,8 +1344,11 @@ class ScaleDataUpdateCoordinator:
         flapping/bootlooping proxy could otherwise keep pre-empting the
         backoff timer faster than the backoff is meant to allow (no leak,
         but repeated real I/O load) - `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS`
-        is a hard floor on that specific path. A successful restart resets
-        the backoff.
+        is a hard floor on that specific path. It only applies while a
+        backoff retry is pending (i.e. restarts are currently failing); it
+        does not throttle events while restarts are succeeding, since
+        pre-emption - and therefore this risk - can't occur on that path.
+        A successful restart resets the backoff.
         """
         if self._restart_retry_unsub is not None:
             # A backoff retry is already scheduled, but this is a real
@@ -1355,6 +1358,11 @@ class ScaleDataUpdateCoordinator:
             # and try now - but only if enough time has passed since the
             # last attempt; otherwise leave the scheduled backoff retry
             # alone so repeated events can't drive back-to-back restarts.
+            # `_last_restart_attempt_monotonic` is always set by the time
+            # `_restart_retry_unsub` is non-None (both happen in the same
+            # call, `_last_restart_attempt_monotonic` first), so the None
+            # case below is unreachable today - kept as a defensive guard
+            # in case that invariant ever changes.
             since_last_attempt = (
                 None
                 if self._last_restart_attempt_monotonic is None
