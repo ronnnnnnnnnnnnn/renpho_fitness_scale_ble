@@ -1500,13 +1500,20 @@ class ScaleDataUpdateCoordinator:
         if self._scanner_change_cb_unregister is not None:
             self._scanner_change_cb_unregister()
             self._scanner_change_cb_unregister = None
-        # Cancel any pending backoff retry so a stopped/unloaded coordinator
-        # can't restart itself later.
-        if self._restart_retry_unsub is not None:
-            self._restart_retry_unsub()
-            self._restart_retry_unsub = None
         async with self._start_lock:
             self._stopped = True
+            # Cancel any pending backoff retry so a stopped/unloaded
+            # coordinator can't restart itself later. Done under the lock,
+            # right after setting `_stopped`: an in-flight restart holds
+            # the lock for its whole attempt, including scheduling a new
+            # backoff retry on failure, so by the time we get the lock
+            # ourselves any such retry has already been scheduled and is
+            # visible here to cancel - it can't be scheduled afterwards
+            # and slip past this check, since `_stopped` makes any later
+            # restart attempt a no-op before it would reach that point.
+            if self._restart_retry_unsub is not None:
+                self._restart_retry_unsub()
+                self._restart_retry_unsub = None
             if self._scale is not None:
                 try:
                     await self._scale.async_stop()
