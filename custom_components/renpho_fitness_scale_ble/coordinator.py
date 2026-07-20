@@ -1340,29 +1340,23 @@ class ScaleDataUpdateCoordinator:
         added/removed) instead cancels any pending backoff retry and
         restarts immediately, since the event itself could be exactly
         what fixes the failure (e.g. an ESPHome proxy reconnecting).
+
         Registration events aren't rate-limited by HA itself, though, so a
-        flapping/bootlooping proxy could otherwise keep pre-empting the
-        backoff timer faster than the backoff is meant to allow (no leak,
-        but repeated real I/O load) - `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS`
-        is a hard floor on that specific path. It only applies while a
-        backoff retry is pending (i.e. restarts are currently failing); it
-        does not throttle events while restarts are succeeding, since
-        pre-emption - and therefore this risk - can't occur on that path.
+        flapping/bootlooping proxy could otherwise drive restart attempts
+        faster than the backoff is meant to allow (no leak, but repeated
+        real I/O load). `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS` is a hard
+        floor on *every* restart attempt made from here, regardless of
+        whether a backoff retry happens to be pending - covering both a
+        flapping proxy during an active backoff and one whose restarts
+        happen to keep succeeding (no backoff pending at all). The check
+        and the restart attempt both happen under `_start_lock`, so a
+        burst of events arriving while a restart is already in flight
+        queue up on the lock and then re-check the floor against the
+        latest attempt (including one that just finished) instead of all
+        slipping through on a stale check made before they were queued.
         A successful restart resets the backoff.
         """
-        if self._restart_retry_unsub is not None:
-            # A backoff retry is already scheduled, but this is a real
-            # registration-change event, not the retry timer firing (the
-            # timer's own callback clears `_restart_retry_unsub` before
-            # calling back in here). Normally we'd cancel the pending retry
-            # and try now - but only if enough time has passed since the
-            # last attempt; otherwise leave the scheduled backoff retry
-            # alone so repeated events can't drive back-to-back restarts.
-            # `_last_restart_attempt_monotonic` is always set by the time
-            # `_restart_retry_unsub` is non-None (both happen in the same
-            # call, `_last_restart_attempt_monotonic` first), so the None
-            # case below is unreachable today - kept as a defensive guard
-            # in case that invariant ever changes.
+        async with self._start_lock:
             since_last_attempt = (
                 None
                 if self._last_restart_attempt_monotonic is None
@@ -1374,54 +1368,60 @@ class ScaleDataUpdateCoordinator:
             ):
                 _LOGGER.debug(
                     "Registration-change event arrived %.1fs after the "
-                    "last restart attempt (< %ds debounce floor); leaving "
-                    "the scheduled backoff retry in place instead of "
-                    "pre-empting it",
+                    "last restart attempt (< %ds debounce floor); "
+                    "skipping this restart attempt",
                     since_last_attempt,
                     REGISTRATION_PREEMPT_DEBOUNCE_SECONDS,
                 )
                 return
-            _LOGGER.debug(
-                "Scale client restart already scheduled (backoff after %d "
-                "failure(s)); registration-change event pre-empting it for "
-                "an immediate retry",
-                self._restart_failures,
-            )
-            self._restart_retry_unsub()
-            self._restart_retry_unsub = None
-        _LOGGER.debug("BT scanner registration changed; restarting scale client")
-        try:
-            self._last_restart_attempt_monotonic = time.monotonic()
-            async with self._start_lock:
-                await self._async_start()
-        except Exception:
-            self._restart_failures += 1
-            delay = min(
-                RESTART_BACKOFF_BASE_SECONDS * (2 ** (self._restart_failures - 1)),
-                RESTART_BACKOFF_MAX_SECONDS,
-            )
-            _LOGGER.exception(
-                "Failed to restart scale client after scanner change "
-                "(consecutive failure #%d); next retry in %ds",
-                self._restart_failures,
-                delay,
-            )
-            self._schedule_restart_retry(delay)
-        else:
-            if self._restart_failures:
-                _LOGGER.info(
-                    "Scale client restart succeeded after %d failed attempt(s); "
-                    "resetting backoff",
+            if self._restart_retry_unsub is not None:
+                # A backoff retry is already scheduled, but this is a real
+                # registration-change event, not the retry timer firing
+                # (the timer's own callback clears `_restart_retry_unsub`
+                # before calling back in here) - cancel the pending retry
+                # and try now, since the event itself could be exactly
+                # what fixes the failure.
+                _LOGGER.debug(
+                    "Scale client restart already scheduled (backoff after "
+                    "%d failure(s)); registration-change event pre-empting "
+                    "it for an immediate retry",
                     self._restart_failures,
                 )
-            self._restart_failures = 0
+                self._restart_retry_unsub()
+                self._restart_retry_unsub = None
+            _LOGGER.debug("BT scanner registration changed; restarting scale client")
+            try:
+                self._last_restart_attempt_monotonic = time.monotonic()
+                await self._async_start()
+            except Exception:
+                self._restart_failures += 1
+                delay = min(
+                    RESTART_BACKOFF_BASE_SECONDS * (2 ** (self._restart_failures - 1)),
+                    RESTART_BACKOFF_MAX_SECONDS,
+                )
+                _LOGGER.exception(
+                    "Failed to restart scale client after scanner change "
+                    "(consecutive failure #%d); next retry in %ds",
+                    self._restart_failures,
+                    delay,
+                )
+                self._schedule_restart_retry(delay)
+            else:
+                if self._restart_failures:
+                    _LOGGER.info(
+                        "Scale client restart succeeded after %d failed "
+                        "attempt(s); resetting backoff",
+                        self._restart_failures,
+                    )
+                self._restart_failures = 0
 
     def _schedule_restart_retry(self, delay: float) -> None:
         """Schedule a single delayed restart retry.
 
-        Only one retry is ever pending; `_async_registration_changed` skips
-        new work while `_restart_retry_unsub` is set. The handle is cleared
-        both when the timer fires and in `async_stop`.
+        Only one retry is ever pending at a time - a new registration event
+        pre-empts it (subject to `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS`)
+        rather than a second one being scheduled alongside it. The handle
+        is cleared both when the timer fires and in `async_stop`.
         """
 
         @callback
