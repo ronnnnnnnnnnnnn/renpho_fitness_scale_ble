@@ -131,14 +131,14 @@ RESTART_BACKOFF_MAX_SECONDS = 1800  # 30 minutes
 
 
 # Hard floor between scale-client restart attempts triggered by a
-# registration event pre-empting a pending backoff retry (see
-# `_async_registration_changed`). HA's scanner-registration callback isn't
-# itself rate-limited, so without this floor a flapping/bootlooping BT
-# proxy could keep pre-empting the backoff timer on every flap and drive
-# back-to-back `_async_start()` cycles - no leak (that's fixed), but
-# repeated real I/O load faster than the backoff is meant to allow. Applies
-# only to the pre-emption path; it does not touch the backoff delay itself
-# or the no-backoff-pending (restarts currently succeeding) path.
+# registration event (see `_async_registration_changed`). HA's
+# scanner-registration callback isn't itself rate-limited, so without this
+# floor a flapping/bootlooping BT proxy could drive back-to-back
+# `_async_start()` cycles - no leak (that's fixed), but repeated real I/O
+# load faster than the backoff is meant to allow. Applies unconditionally
+# to every restart attempt made from a registration event, regardless of
+# whether a backoff retry happens to be pending - it does not touch the
+# backoff delay itself.
 REGISTRATION_PREEMPT_DEBOUNCE_SECONDS = 5
 
 
