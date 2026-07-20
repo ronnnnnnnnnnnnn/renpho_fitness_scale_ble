@@ -881,6 +881,14 @@ class ScaleDataUpdateCoordinator:
         # change event firing during the initial start could double-start
         # the client.
         self._start_lock = asyncio.Lock()
+        # Set once by `async_stop`, under `_start_lock`. Lets a
+        # `_async_registration_changed` call that was already scheduled
+        # before the stop (e.g. a registration event that fired just
+        # before unload) notice, once it's its turn at the lock, that the
+        # coordinator is gone and bail out instead of building a new scale
+        # client after shutdown. Never reset - each config-entry setup
+        # creates a fresh coordinator instance.
+        self._stopped = False
         # Backoff state for scanner-change restarts (see
         # `_async_registration_changed`). Counts consecutive `_async_start`
         # failures and holds the cancel handle of the (single, coalesced)
@@ -1357,6 +1365,16 @@ class ScaleDataUpdateCoordinator:
         A successful restart resets the backoff.
         """
         async with self._start_lock:
+            if self._stopped:
+                # A registration event scheduled this call before
+                # `async_stop` ran (e.g. right before unload) but only
+                # got the lock afterwards - `async_stop` already tore
+                # down `self._scale`; don't build a new one.
+                _LOGGER.debug(
+                    "Registration-change event arrived after the "
+                    "coordinator was stopped; ignoring"
+                )
+                return
             since_last_attempt = (
                 None
                 if self._last_restart_attempt_monotonic is None
@@ -1464,7 +1482,18 @@ class ScaleDataUpdateCoordinator:
         return logger
 
     async def async_stop(self) -> None:
-        """Stop the scale client and clean up callbacks."""
+        """Stop the scale client and clean up callbacks.
+
+        Takes `_start_lock` around the actual client teardown so this
+        can't run concurrently with an in-flight `_async_start()` (called
+        from here or from `_async_registration_changed`) - without it, a
+        restart racing with unload could leave a freshly-built scale
+        client running after this returns, or double-stop/`AttributeError`
+        on the client being torn down mid-rebuild. `_stopped` is set
+        first, before touching `self._scale`, so a registration event that
+        was already scheduled before this call notices once it's its turn
+        at the lock and bails out instead of building a new client.
+        """
         if self._unsub_core_config_update is not None:
             self._unsub_core_config_update()
             self._unsub_core_config_update = None
@@ -1476,16 +1505,18 @@ class ScaleDataUpdateCoordinator:
         if self._restart_retry_unsub is not None:
             self._restart_retry_unsub()
             self._restart_retry_unsub = None
-        if self._scale is not None:
-            try:
-                await self._scale.async_stop()
-            except Exception:
-                # Benign on teardown/restart: BlueZ can report
-                # `org.bluez.Error.Failed: No discovery started` when the scan
-                # was already stopped. Don't let it surface as an unhandled
-                # task-exception traceback.
-                _LOGGER.exception("Error stopping scale client")
-            self._scale = None
+        async with self._start_lock:
+            self._stopped = True
+            if self._scale is not None:
+                try:
+                    await self._scale.async_stop()
+                except Exception:
+                    # Benign on teardown/restart: BlueZ can report
+                    # `org.bluez.Error.Failed: No discovery started` when the scan
+                    # was already stopped. Don't let it surface as an unhandled
+                    # task-exception traceback.
+                    _LOGGER.exception("Error stopping scale client")
+                self._scale = None
 
     # ------------------------------------------------------------------
     # Listener registries
