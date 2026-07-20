@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -127,6 +128,18 @@ PENDING_MEASUREMENT_MAX_AGE = timedelta(hours=24)
 # run often enough to saturate the HA event loop for hours.
 RESTART_BACKOFF_BASE_SECONDS = 30
 RESTART_BACKOFF_MAX_SECONDS = 1800  # 30 minutes
+
+
+# Hard floor between scale-client restart attempts triggered by a
+# registration event pre-empting a pending backoff retry (see
+# `_async_registration_changed`). HA's scanner-registration callback isn't
+# itself rate-limited, so without this floor a flapping/bootlooping BT
+# proxy could keep pre-empting the backoff timer on every flap and drive
+# back-to-back `_async_start()` cycles - no leak (that's fixed), but
+# repeated real I/O load faster than the backoff is meant to allow. Applies
+# only to the pre-emption path; it does not touch the backoff delay itself
+# or the no-backoff-pending (restarts currently succeeding) path.
+REGISTRATION_PREEMPT_DEBOUNCE_SECONDS = 5
 
 
 # How long to ignore advertisements from the scale after a successful
@@ -874,6 +887,10 @@ class ScaleDataUpdateCoordinator:
         # scheduled retry.
         self._restart_failures = 0
         self._restart_retry_unsub: Callable[[], None] | None = None
+        # Monotonic timestamp of the last `_async_start` attempt made from
+        # `_async_registration_changed`, used to enforce
+        # `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS` on the pre-emption path.
+        self._last_restart_attempt_monotonic: float | None = None
         self._display_unit: WeightUnit = WeightUnit.KG
         self._config_entry_id: str | None = None
 
@@ -1322,16 +1339,40 @@ class ScaleDataUpdateCoordinator:
         30min cap): a *real* registration event (a scanner actually being
         added/removed) instead cancels any pending backoff retry and
         restarts immediately, since the event itself could be exactly
-        what fixes the failure (e.g. an ESPHome proxy reconnecting). This
-        can't reintroduce a hot loop because registration events are
-        rate-limited by real adapter/proxy-reconnect cadence, unlike a
-        self-scheduled retry. A successful restart resets the backoff.
+        what fixes the failure (e.g. an ESPHome proxy reconnecting).
+        Registration events aren't rate-limited by HA itself, though, so a
+        flapping/bootlooping proxy could otherwise keep pre-empting the
+        backoff timer faster than the backoff is meant to allow (no leak,
+        but repeated real I/O load) - `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS`
+        is a hard floor on that specific path. A successful restart resets
+        the backoff.
         """
         if self._restart_retry_unsub is not None:
             # A backoff retry is already scheduled, but this is a real
             # registration-change event, not the retry timer firing (the
             # timer's own callback clears `_restart_retry_unsub` before
-            # calling back in here) - cancel the pending retry and try now.
+            # calling back in here). Normally we'd cancel the pending retry
+            # and try now - but only if enough time has passed since the
+            # last attempt; otherwise leave the scheduled backoff retry
+            # alone so repeated events can't drive back-to-back restarts.
+            since_last_attempt = (
+                None
+                if self._last_restart_attempt_monotonic is None
+                else time.monotonic() - self._last_restart_attempt_monotonic
+            )
+            if (
+                since_last_attempt is not None
+                and since_last_attempt < REGISTRATION_PREEMPT_DEBOUNCE_SECONDS
+            ):
+                _LOGGER.debug(
+                    "Registration-change event arrived %.1fs after the "
+                    "last restart attempt (< %ds debounce floor); leaving "
+                    "the scheduled backoff retry in place instead of "
+                    "pre-empting it",
+                    since_last_attempt,
+                    REGISTRATION_PREEMPT_DEBOUNCE_SECONDS,
+                )
+                return
             _LOGGER.debug(
                 "Scale client restart already scheduled (backoff after %d "
                 "failure(s)); registration-change event pre-empting it for "
@@ -1342,6 +1383,7 @@ class ScaleDataUpdateCoordinator:
             self._restart_retry_unsub = None
         _LOGGER.debug("BT scanner registration changed; restarting scale client")
         try:
+            self._last_restart_attempt_monotonic = time.monotonic()
             async with self._start_lock:
                 await self._async_start()
         except Exception:
