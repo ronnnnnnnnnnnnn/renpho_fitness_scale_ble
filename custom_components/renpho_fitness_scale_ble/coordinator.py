@@ -718,9 +718,10 @@ class BleakScannerHybrid(BaseBleakScanner):
                 )
                 # The scanner's own start() failed, but it may still have
                 # partially initialized (e.g. subscribed to advertisements)
-                # before raising. Stop it explicitly rather than relying on
-                # BleakScannerHybrid.stop(), which no-ops until
-                # self._scanning is True.
+                # before raising. Stop it explicitly here rather than via
+                # self.stop() — self._scanners still holds every scanner in
+                # this loop, so self.stop() would also stop scanners that
+                # already started successfully in this same pass.
                 try:
                     await scanner.stop()
                 except Exception:  # noqa: BLE001
