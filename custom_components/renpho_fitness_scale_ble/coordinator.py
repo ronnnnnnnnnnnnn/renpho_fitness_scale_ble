@@ -138,7 +138,9 @@ RESTART_BACKOFF_MAX_SECONDS = 1800  # 30 minutes
 # load faster than the backoff is meant to allow. Applies unconditionally
 # to every restart attempt made from a registration event, regardless of
 # whether a backoff retry happens to be pending - it does not touch the
-# backoff delay itself.
+# backoff delay itself. Events landing inside the floor are deferred, not
+# dropped: they coalesce into a single retry scheduled for the floor's
+# expiry, so no registration event is ever lost.
 REGISTRATION_PREEMPT_DEBOUNCE_SECONDS = 5
 
 
@@ -1363,7 +1365,13 @@ class ScaleDataUpdateCoordinator:
         queue up on the lock and then re-check the floor against the
         latest attempt (including one that just finished) instead of all
         slipping through on a stale check made before they were queued.
-        A successful restart resets the backoff.
+        Events landing inside the floor are deferred rather than dropped:
+        they coalesce into a single retry scheduled for the floor's
+        expiry (pulling in any pending backoff retry, whose delay is
+        always longer than the floor), preserving the invariant that
+        every registration event leads to a restart attempt - either
+        immediately or as soon as the floor allows. A successful restart
+        resets the backoff.
         """
         async with self._start_lock:
             if self._stopped:
@@ -1385,12 +1393,29 @@ class ScaleDataUpdateCoordinator:
                 since_last_attempt is not None
                 and since_last_attempt < REGISTRATION_PREEMPT_DEBOUNCE_SECONDS
             ):
+                # Defer, don't drop: restarts are edge-triggered (each one
+                # reads live scanner state only at the moment it runs), so
+                # an event discarded here would be lost until an unrelated
+                # future event fired - e.g. a second proxy registering
+                # seconds after the first would never get picked up.
+                # Coalesce it into a single retry at the floor's expiry
+                # instead. Any pending backoff retry is pulled in to that
+                # same expiry: its delay is always longer than the floor
+                # (30s base vs 5s), and per the pre-emption rule below a
+                # real event should be acted on as soon as the floor
+                # allows.
+                remaining = REGISTRATION_PREEMPT_DEBOUNCE_SECONDS - since_last_attempt
+                if self._restart_retry_unsub is not None:
+                    self._restart_retry_unsub()
+                    self._restart_retry_unsub = None
+                self._schedule_restart_retry(remaining)
                 _LOGGER.debug(
                     "Registration-change event arrived %.1fs after the "
                     "last restart attempt (< %ds debounce floor); "
-                    "skipping this restart attempt",
+                    "deferring restart by %.1fs",
                     since_last_attempt,
                     REGISTRATION_PREEMPT_DEBOUNCE_SECONDS,
+                    remaining,
                 )
                 return
             if self._restart_retry_unsub is not None:
@@ -1437,10 +1462,13 @@ class ScaleDataUpdateCoordinator:
     def _schedule_restart_retry(self, delay: float) -> None:
         """Schedule a single delayed restart retry.
 
-        Only one retry is ever pending at a time - a new registration event
-        pre-empts it (subject to `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS`)
-        rather than a second one being scheduled alongside it. The handle
-        is cleared both when the timer fires and in `async_stop`.
+        Serves both the exponential-backoff retries after a failed restart
+        and the deferred restarts coalesced by the debounce floor. Only one
+        retry is ever pending at a time - a new registration event
+        pre-empts it (immediately when outside the debounce floor,
+        rescheduled to the floor's expiry when inside it) rather than a
+        second one being scheduled alongside it. The handle is cleared
+        both when the timer fires and in `async_stop`.
         """
 
         @callback
