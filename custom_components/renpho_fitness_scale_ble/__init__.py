@@ -26,6 +26,7 @@ from .const import (
     DOMAIN,
     HISTORY_RETENTION_DAYS,
     MAX_HISTORY_SIZE,
+    PASSIVE_SCAN_ISSUE_ID,
     PROTOCOL_QN,
 )
 from .coordinator import (
@@ -377,3 +378,24 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if hass.services.has_service(DOMAIN, service):
                     hass.services.async_remove(DOMAIN, service)
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clean up after a config entry is permanently removed.
+
+    The passive-scanning repair issue is host-level rather than
+    entry-scoped, so `async_clear_repair_issues_for_entry` deliberately
+    leaves it alone (deleting it on every unload/reload would erase the
+    user's "ignore" flag). Remove it here instead, once the integration's
+    last config entry is gone - this hook only fires on permanent
+    removal, never on reload.
+    """
+    from homeassistant.helpers import issue_registry as ir
+
+    remaining = [
+        e
+        for e in hass.config_entries.async_entries(DOMAIN)
+        if e.entry_id != entry.entry_id
+    ]
+    if not remaining:
+        ir.async_delete_issue(hass, DOMAIN, PASSIVE_SCAN_ISSUE_ID)

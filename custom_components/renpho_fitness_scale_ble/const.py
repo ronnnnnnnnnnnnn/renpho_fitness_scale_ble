@@ -2,6 +2,15 @@
 
 DOMAIN = "renpho_fitness_scale_ble"
 
+# Repair issue raised when a Linux native adapter can't do passive scanning
+# (BlueZ experimental features disabled). Deliberately NOT entry-scoped
+# (no `_{entry_id}_` in the id): the condition is host-level, and the
+# entry-suffix cleanup in `repairs.py` must not delete it on reload —
+# deleting a repair issue erases the user's "ignore" flag, so it would
+# resurface on every reload. Cleared when the capability appears, and on
+# removal of the integration's last config entry.
+PASSIVE_SCAN_ISSUE_ID = "passive_scan_unavailable"
+
 # --- Per-config-entry data keys ---
 CONF_SCALE_DISPLAY_UNIT = "scale_display_unit"
 CONF_USER_PROFILES = "user_profiles"

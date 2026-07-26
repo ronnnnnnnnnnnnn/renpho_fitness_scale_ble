@@ -35,8 +35,8 @@ from bluetooth_data_tools import (
     parse_advertisement_data_tuple,
 )
 from homeassistant.components import persistent_notification
-from homeassistant.const import UnitOfMass
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, UnitOfMass
+from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
@@ -84,6 +84,7 @@ from .const import (
     DOMAIN,
     HISTORY_RETENTION_DAYS,
     MAX_HISTORY_SIZE,
+    PASSIVE_SCAN_ISSUE_ID,
     PROTOCOL_AABB,
     PROTOCOL_QN,
     parse_notify_service,
@@ -131,7 +132,8 @@ RESTART_BACKOFF_MAX_SECONDS = 1800  # 30 minutes
 
 
 # Hard floor between scale-client restart attempts triggered by a
-# registration event (see `_async_registration_changed`). HA's
+# registration event, measured from the *end* of the previous attempt
+# (see `_async_registration_changed`). HA's
 # scanner-registration callback isn't itself rate-limited, so without this
 # floor a flapping/bootlooping BT proxy could drive back-to-back
 # `_async_start()` cycles - no leak (that's fixed), but repeated real I/O
@@ -899,10 +901,20 @@ class ScaleDataUpdateCoordinator:
         # scheduled retry.
         self._restart_failures = 0
         self._restart_retry_unsub: Callable[[], None] | None = None
-        # Monotonic timestamp of the last `_async_start` attempt made from
-        # `_async_registration_changed`, used to enforce
+        # Monotonic timestamp of the end of the last `_async_start` attempt
+        # made from `_async_registration_changed`, used to enforce
         # `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS` on the pre-emption path.
         self._last_restart_attempt_monotonic: float | None = None
+        # Set by `_get_bluetooth_scanner` when it returns None *and* the
+        # native adapter can't do passive scanning, i.e. the scale library
+        # will run its own ACTIVE scanner. Drives the boot deferral in
+        # `_async_start`.
+        self._active_fallback = False
+        # One-shot EVENT_HOMEASSISTANT_STARTED listener deferring the first
+        # ACTIVE-fallback start until HA has fully started (see
+        # `_async_start`). Only ever set when that fallback would otherwise
+        # fire into the boot window; cancelled in `async_stop`.
+        self._started_listener_unsub: Callable[[], None] | None = None
         self._display_unit: WeightUnit = WeightUnit.KG
         self._config_entry_id: str | None = None
 
@@ -991,6 +1003,7 @@ class ScaleDataUpdateCoordinator:
             native_passive = False
 
             # Check for native adapters with better error handling
+            adapter_check_ok = True
             try:
                 for adapter in manager._bluetooth_adapters.adapters.values():
                     if sources.get(adapter["address"]) is not None:
@@ -1009,6 +1022,34 @@ class ScaleDataUpdateCoordinator:
                 _LOGGER.warning("Error checking native Bluetooth adapters: %s", err)
                 native = False
                 native_passive = False
+                adapter_check_ok = False
+
+            # Surface (or clear) the passive-scanning repair issue. Tied to
+            # the host capability, not to which scanner path is chosen
+            # below: proxies coming and going must not delete/re-create the
+            # issue, since deletion erases the user's "ignore" flag and the
+            # issue would resurface on every topology change. Skipped
+            # entirely when adapter detection errored - a transient failure
+            # must not clear (and later resurface) an ignored issue.
+            if adapter_check_ok:
+                from homeassistant.helpers import issue_registry as ir
+
+                if IS_LINUX and native and not native_passive:
+                    ir.async_create_issue(
+                        self.hass,
+                        DOMAIN,
+                        PASSIVE_SCAN_ISSUE_ID,
+                        is_fixable=False,
+                        severity=ir.IssueSeverity.WARNING,
+                        translation_key="passive_scan_unavailable",
+                        learn_more_url=(
+                            "https://github.com/ronnnnnnnnnnnnn/"
+                            "renpho_fitness_scale_ble#bluetooth-issues-"
+                            "with-a-native-linux-adapter-bluez"
+                        ),
+                    )
+                else:
+                    ir.async_delete_issue(self.hass, DOMAIN, PASSIVE_SCAN_ISSUE_ID)
 
             # Get ESPHome proxies with error handling
             esphome_clients: list[APIClient] = []
@@ -1032,6 +1073,10 @@ class ScaleDataUpdateCoordinator:
 
             # Initialize scanner with error handling
             scanner: BaseBleakScanner | None = None
+            # Reset each pass: only the `elif native:` branch below (native
+            # adapter that can't do passive) leaves the library running its
+            # own active scanner.
+            self._active_fallback = False
             if len(esphome_clients) > 0:
                 try:
                     if native:
@@ -1091,17 +1136,29 @@ class ScaleDataUpdateCoordinator:
                 # are disabled). Keep the previous behavior - the scale
                 # library will run its own active scanner - instead of
                 # failing hard, but explain how to get the race-free path.
-                _LOGGER.warning(
-                    "Passive scanning is not available on this adapter "
-                    "(BlueZ AdvertisementMonitor API not exposed), so the "
-                    "scale library will use its own active scanner. This "
-                    "can fail with org.bluez.Error.InProgress while Home "
-                    "Assistant's shared scanner is starting up (issue #13). "
-                    "For reliable startup, enable BlueZ experimental "
-                    "features (Experimental = true in "
-                    "/etc/bluetooth/main.conf; requires BlueZ >= 5.56 and "
-                    "kernel >= 5.10) and restart the bluetooth service"
-                )
+                if IS_LINUX:
+                    _LOGGER.warning(
+                        "Passive scanning is not available on this adapter "
+                        "(BlueZ AdvertisementMonitor API not exposed), so "
+                        "the scale library will use its own active "
+                        "scanner. This can fail with "
+                        "org.bluez.Error.InProgress while Home Assistant's "
+                        "shared scanner is starting up (issue #13). For "
+                        "reliable startup, enable BlueZ experimental "
+                        "features (Experimental = true in "
+                        "/etc/bluetooth/main.conf; requires BlueZ >= 5.56 "
+                        "and kernel >= 5.10) and restart the bluetooth "
+                        "service"
+                    )
+                else:
+                    # Non-Linux: the library ignores the passive request
+                    # anyway (it only applies passive on Linux), so this is
+                    # just bookkeeping - no BlueZ guidance to give.
+                    _LOGGER.debug(
+                        "Passive scanning not available on this adapter; "
+                        "the scale library will use its own active scanner"
+                    )
+                self._active_fallback = True
             else:
                 # No ESPHome proxies AND no native adapter = no Bluetooth available
                 raise BluetoothNotAvailableError(
@@ -1323,6 +1380,46 @@ class ScaleDataUpdateCoordinator:
             self._scale = None
         scanner = await self._get_bluetooth_scanner()
 
+        # Defer the first ACTIVE-fallback start until HA has fully started.
+        # An active StartDiscovery fired into the boot melee (HA's shared
+        # scanner starting, adapter firmware still loading) is the prime
+        # suspect for wedging some adapters into a persistent
+        # `org.bluez.Error.InProgress` (issue #13), so wait out the window
+        # instead of racing it. The listener routes through
+        # `_async_registration_changed`, so the normal lock, debounce and
+        # backoff machinery applies when it fires. Entities stay idle until
+        # then; this branch is unreachable for reloads and late setups
+        # (state is already `running` then). The state check matches HA's
+        # own `async_at_started` helper - NOT `is_running`, which is
+        # already True during CoreState.starting (the <=15s wrap-up window
+        # between START and STARTED, i.e. peak boot churn).
+        if (
+            scanner is None
+            and self._active_fallback
+            and self.hass.state is not CoreState.running
+        ):
+            if self._started_listener_unsub is None:
+                self._started_listener_unsub = self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED, self._on_ha_started
+                )
+                _LOGGER.info(
+                    "Deferring active-mode scanner start for %s until Home "
+                    "Assistant has finished starting, to avoid the BlueZ "
+                    "startup race",
+                    self.address,
+                )
+            return
+
+        # A start is actually proceeding (a scanner became available, the
+        # passive path applies, or HA finished starting). A still-pending
+        # deferred start from an earlier pass would only force a redundant
+        # rebuild when STARTED fires - cancel it. Failure recovery isn't
+        # lost: if this start throws, the backoff machinery schedules the
+        # retry, not the listener.
+        if self._started_listener_unsub is not None:
+            self._started_listener_unsub()
+            self._started_listener_unsub = None
+
         try:
             ScaleProtocol(self._protocol)
         except ValueError:
@@ -1408,7 +1505,9 @@ class ScaleDataUpdateCoordinator:
         flapping/bootlooping proxy could otherwise drive restart attempts
         faster than the backoff is meant to allow (no leak, but repeated
         real I/O load). `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS` is a hard
-        floor on *every* restart attempt made from here, regardless of
+        floor on *every* restart attempt made from here, measured from
+        the end of the previous attempt (so even a slow attempt is
+        followed by a full quiet window), regardless of
         whether a backoff retry happens to be pending - covering both a
         flapping proxy during an active backoff and one whose restarts
         happen to keep succeeding (no backoff pending at all). The check
@@ -1452,14 +1551,11 @@ class ScaleDataUpdateCoordinator:
                 # seconds after the first would never get picked up.
                 # Coalesce it into a single retry at the floor's expiry
                 # instead. Any pending backoff retry is pulled in to that
-                # same expiry: its delay is always longer than the floor
-                # (30s base vs 5s), and per the pre-emption rule below a
-                # real event should be acted on as soon as the floor
-                # allows.
+                # same expiry (`_schedule_restart_retry` replaces it): its
+                # delay is always longer than the floor (30s base vs 5s),
+                # and per the pre-emption rule below a real event should
+                # be acted on as soon as the floor allows.
                 remaining = REGISTRATION_PREEMPT_DEBOUNCE_SECONDS - since_last_attempt
-                if self._restart_retry_unsub is not None:
-                    self._restart_retry_unsub()
-                    self._restart_retry_unsub = None
                 self._schedule_restart_retry(remaining)
                 _LOGGER.debug(
                     "Registration-change event arrived %.1fs after the "
@@ -1487,7 +1583,6 @@ class ScaleDataUpdateCoordinator:
                 self._restart_retry_unsub = None
             _LOGGER.debug("BT scanner registration changed; restarting scale client")
             try:
-                self._last_restart_attempt_monotonic = time.monotonic()
                 await self._async_start()
             except Exception:
                 self._restart_failures += 1
@@ -1510,18 +1605,31 @@ class ScaleDataUpdateCoordinator:
                         self._restart_failures,
                     )
                 self._restart_failures = 0
+            finally:
+                # Stamp the *end* of the attempt, not the start: the floor
+                # guarantees a quiet window between the end of one attempt
+                # and the start of the next. Stamped at the start, events
+                # queued on the lock behind a slow attempt (scanner startup
+                # is real BLE I/O) would sail through the floor the moment
+                # the lock releases - back-to-back rebuilds exactly when
+                # rebuilds are most expensive.
+                self._last_restart_attempt_monotonic = time.monotonic()
 
     def _schedule_restart_retry(self, delay: float) -> None:
         """Schedule a single delayed restart retry.
 
         Serves both the exponential-backoff retries after a failed restart
-        and the deferred restarts coalesced by the debounce floor. Only one
-        retry is ever pending at a time - a new registration event
-        pre-empts it (immediately when outside the debounce floor,
-        rescheduled to the floor's expiry when inside it) rather than a
-        second one being scheduled alongside it. The handle is cleared
-        both when the timer fires and in `async_stop`.
+        and the deferred restarts coalesced by the debounce floor. Cancels
+        any retry already pending before scheduling, so only one retry is
+        ever pending at a time - a new registration event pre-empts it
+        (immediately when outside the debounce floor, rescheduled to the
+        floor's expiry when inside it) rather than a second one being
+        scheduled alongside it. The handle is also cleared when the timer
+        fires and in `async_stop`.
         """
+        if self._restart_retry_unsub is not None:
+            self._restart_retry_unsub()
+            self._restart_retry_unsub = None
 
         @callback
         def _retry(_now) -> None:
@@ -1529,6 +1637,18 @@ class ScaleDataUpdateCoordinator:
             self.hass.async_create_task(self._async_registration_changed())
 
         self._restart_retry_unsub = async_call_later(self.hass, delay, _retry)
+
+    @callback
+    def _on_ha_started(self, _event) -> None:
+        """Run the deferred first start once HA has fully started.
+
+        Routed through `_async_registration_changed` rather than calling
+        `_async_start` directly, so the deferred start gets the same
+        `_stopped` check, debounce and backoff treatment as any other
+        restart trigger.
+        """
+        self._started_listener_unsub = None
+        self.hass.async_create_task(self._async_registration_changed())
 
     def _library_logger(self) -> logging.Logger:
         """Logger handed to the renpho-escs20m client.
@@ -1595,6 +1715,11 @@ class ScaleDataUpdateCoordinator:
             if self._restart_retry_unsub is not None:
                 self._restart_retry_unsub()
                 self._restart_retry_unsub = None
+            # Cancel a pending deferred first start (HA-started listener)
+            # for the same reason - a stopped coordinator must not revive.
+            if self._started_listener_unsub is not None:
+                self._started_listener_unsub()
+                self._started_listener_unsub = None
             if self._scale is not None:
                 try:
                     await self._scale.async_stop()
