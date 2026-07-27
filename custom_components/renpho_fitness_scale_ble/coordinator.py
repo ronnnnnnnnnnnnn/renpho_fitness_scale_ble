@@ -838,6 +838,7 @@ class ScaleDataUpdateCoordinator:
         pending_state: dict | None = None,
         history_retention_days: int = HISTORY_RETENTION_DAYS,
         max_history_size: int = MAX_HISTORY_SIZE,
+        keep_history_forever: bool = False,
         enable_library_logging: bool = False,
         protocol: str = PROTOCOL_QN,
     ) -> None:
@@ -851,6 +852,8 @@ class ScaleDataUpdateCoordinator:
             router_state: Optional `WeightRouter.to_dict()` payload to restore.
             history_retention_days: Per-user history retention window.
             max_history_size: Per-user maximum history size.
+            keep_history_forever: When True, the router never prunes history
+                (the retention/size limits above are ignored).
             protocol: BLE protocol the scale speaks (`PROTOCOL_QN` for the
                 connectable GATT variant, `PROTOCOL_AABB` for the broadcast-only
                 weight-only variant). Selects the library scale class.
@@ -940,6 +943,7 @@ class ScaleDataUpdateCoordinator:
         config = RouterConfig(
             history_retention_days=history_retention_days,
             max_history_size=max_history_size,
+            keep_history_forever=keep_history_forever,
         )
         if router_state is not None:
             self._router = WeightRouter.from_dict(router_state)

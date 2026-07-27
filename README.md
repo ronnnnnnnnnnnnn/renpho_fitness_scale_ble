@@ -128,8 +128,9 @@ When adding or editing user profiles (**Settings → Devices & Services → Renp
 
 The same Configure flow exposes integration-wide settings:
 
-- **Display unit:** kg or lb. Sets both the unit displayed on the scale itself and the unit shown for every weight-class sensor in Home Assistant.
-- **Weight history retention (days):** Measurements older than this are pruned from each user's history. Default 90.
+- **Display unit:** kg or lb. Sets both the unit displayed on the scale itself and the unit shown for every weight-class sensor in Home Assistant. Note: changing it overrides any unit you set on an individual weight entity; otherwise per-entity unit settings are respected.
+- **Keep history forever:** Never delete weight measurements automatically. While enabled, the cleanup limits below are ignored.
+- **Weight history retention (days):** Measurements older than this are pruned from each user's history. Default 90. A user's most recent measurement is always kept, so long-absent users remain recognized.
 - **Maximum stored measurements per user:** Per-user history cap (FIFO eviction by timestamp). Default 100.
 - **Enable verbose library logging:** Useful for troubleshooting BLE issues.
 

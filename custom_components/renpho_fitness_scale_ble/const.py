@@ -51,6 +51,9 @@ CONF_INCHES = "inches"
 # --- Advanced settings (per-config-entry) ---
 CONF_HISTORY_RETENTION_DAYS = "history_retention_days"
 CONF_MAX_HISTORY_SIZE = "max_history_size"
+# When True, the age/size limits above are ignored and history is kept
+# forever (maps to multi-user-scale-core's RouterConfig.keep_history_forever)
+CONF_KEEP_HISTORY_FOREVER = "keep_history_forever"
 CONF_ENABLE_LIBRARY_LOGGING = "enable_library_logging"
 
 # --- Defaults that mirror RouterConfig() defaults from multi-user-scale-core ---

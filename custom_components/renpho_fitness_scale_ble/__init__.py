@@ -18,6 +18,7 @@ from homeassistant.helpers.start import async_at_started
 from .const import (
     CONF_ENABLE_LIBRARY_LOGGING,
     CONF_HISTORY_RETENTION_DAYS,
+    CONF_KEEP_HISTORY_FOREVER,
     CONF_MAX_HISTORY_SIZE,
     CONF_PENDING_STATE,
     CONF_PROTOCOL,
@@ -215,6 +216,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_HISTORY_RETENTION_DAYS, HISTORY_RETENTION_DAYS
         ),
         max_history_size=entry.data.get(CONF_MAX_HISTORY_SIZE, MAX_HISTORY_SIZE),
+        keep_history_forever=entry.data.get(CONF_KEEP_HISTORY_FOREVER, False),
         enable_library_logging=entry.data.get(CONF_ENABLE_LIBRARY_LOGGING, False),
         protocol=entry.data.get(CONF_PROTOCOL, PROTOCOL_QN),
     )

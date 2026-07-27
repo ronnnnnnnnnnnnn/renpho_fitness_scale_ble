@@ -44,7 +44,7 @@
   "issue_tracker": "https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues",
   "requirements": [
     "renpho-escs20m==0.5.0",
-    "multi-user-scale-core==0.1.2"
+    "multi-user-scale-core==0.2.0"
   ],
   "version": "0.3.2"
 }

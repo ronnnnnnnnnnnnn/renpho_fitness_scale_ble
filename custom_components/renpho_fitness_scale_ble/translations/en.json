@@ -154,9 +154,25 @@
       "advanced_settings": {
         "title": "Advanced settings",
         "data": {
-          "history_retention_days": "Weight history retention (days)",
-          "max_history_size": "Maximum stored measurements per user",
+          "keep_history_forever": "Keep history forever",
           "enable_library_logging": "Enable verbose library logging"
+        },
+        "data_description": {
+          "keep_history_forever": "Never delete weight measurements automatically. While enabled, the automatic cleanup limits below are ignored."
+        },
+        "sections": {
+          "cleanup_limits": {
+            "name": "Automatic cleanup limits",
+            "description": "Only apply while 'Keep history forever' is disabled.",
+            "data": {
+              "history_retention_days": "Weight history retention (days)",
+              "max_history_size": "Maximum stored measurements per user"
+            },
+            "data_description": {
+              "history_retention_days": "How many days of measurements to keep. Range: 1-365 days.",
+              "max_history_size": "Maximum measurements stored per user. Range: 10-1000."
+            }
+          }
         }
       }
     },
