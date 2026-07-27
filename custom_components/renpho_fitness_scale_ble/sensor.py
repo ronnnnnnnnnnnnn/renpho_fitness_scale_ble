@@ -6,16 +6,17 @@ import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
+    DOMAIN as SENSOR_DOMAIN,
     RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
-    async_update_suggested_units,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, PERCENTAGE, UnitOfMass
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -23,6 +24,7 @@ from renpho_escs20m import WEIGHT_KEY, ScaleData, WeightUnit
 
 from .const import (
     CONF_BODY_METRICS_ENABLED,
+    CONF_LAST_SYNCED_DISPLAY_UNIT,
     CONF_PROTOCOL,
     CONF_SCALE_DISPLAY_UNIT,
     CONF_USER_ID,
@@ -370,6 +372,57 @@ class ScalePendingMeasurementsSensor(SensorEntity):
 # ---------------------------------------------------------------------------
 
 
+def _sync_display_unit_overrides(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    display_unit: UnitOfMass,
+) -> None:
+    """Propagate a changed display-unit option to this entry's weight entities.
+
+    Writes the per-entity display unit (the same registry option the entity
+    settings dialog writes) for every weight-class sensor belonging to this
+    config entry. Native values stay kg throughout - only the display layer
+    moves, so recorded history converts cleanly.
+
+    Runs only when the option actually changed since the last sync (tracked in
+    entry data): per-entity units users set themselves survive restarts and
+    reloads, and are only overridden when the user explicitly changes the
+    integration-wide option.
+    """
+    last_synced = entry.data.get(CONF_LAST_SYNCED_DISPLAY_UNIT)
+    if last_synced == display_unit:
+        return
+
+    if last_synced is not None:
+        registry = er.async_get(hass)
+        for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+            if (
+                reg_entry.domain != SENSOR_DOMAIN
+                or reg_entry.original_device_class != SensorDeviceClass.WEIGHT
+            ):
+                continue
+            # async_update_entity_options replaces the whole per-domain options
+            # dict, so carry over any other stored sensor options (e.g. display
+            # precision) instead of clobbering them.
+            sensor_options = {
+                **(reg_entry.options.get(SENSOR_DOMAIN) or {}),
+                "unit_of_measurement": display_unit,
+            }
+            registry.async_update_entity_options(
+                reg_entry.entity_id, SENSOR_DOMAIN, sensor_options
+            )
+            _LOGGER.debug(
+                "Updated display unit for %s: %s -> %s",
+                reg_entry.entity_id,
+                last_synced,
+                display_unit,
+            )
+
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, CONF_LAST_SYNCED_DISPLAY_UNIT: display_unit}
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -432,13 +485,15 @@ async def async_setup_entry(
     # per-user weight, plus body-metric sensors with WEIGHT device class —
     # fat_free_mass, muscle_mass, bone_mass). Native values are always
     # stored in kg; this just tells HA which unit to *display*.
-    # `async_update_suggested_units` re-applies the choice across reloads
-    # when the user changes the unit via the options flow.
+    # New entities consume the suggestion once at first registration; when
+    # the option changes, _sync_display_unit_overrides() re-applies it to
+    # existing entities via per-entity registry options scoped to this
+    # entry.
     for sensor in entities:
         if getattr(sensor, "_attr_device_class", None) == SensorDeviceClass.WEIGHT:
             sensor._attr_suggested_unit_of_measurement = display_unit
+    _sync_display_unit_overrides(hass, entry, display_unit)
 
     async_add_entities(entities)
-    async_update_suggested_units(hass)
 
     await coordinator.async_start()

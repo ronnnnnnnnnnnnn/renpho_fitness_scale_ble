@@ -13,6 +13,10 @@ PASSIVE_SCAN_ISSUE_ID = "passive_scan_unavailable"
 
 # --- Per-config-entry data keys ---
 CONF_SCALE_DISPLAY_UNIT = "scale_display_unit"
+# Last display unit propagated to the weight entities' registry options; lets
+# sensor setup detect an actual option change vs. an ordinary reload/restart,
+# so per-entity units set by the user are only overridden on explicit changes.
+CONF_LAST_SYNCED_DISPLAY_UNIT = "last_synced_display_unit"
 CONF_USER_PROFILES = "user_profiles"
 CONF_ROUTER_STATE = "router_state"
 CONF_PENDING_STATE = "pending_state"
