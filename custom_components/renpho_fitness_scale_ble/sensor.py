@@ -177,9 +177,17 @@ class ScaleUserWeightSensor(ScaleUserSensor):
     own displayed value.
     """
 
+    # Never record the history attribute: past the recorder's 16 KB attribute
+    # limit (MAX_STATE_ATTRS_BYTES, ~68 entries) the recorder stores {} for
+    # ALL of the state's attributes, and statistics compilation then sees a
+    # state without unit_of_measurement and suppresses long-term statistics.
+    _unrecorded_attributes = frozenset({"weight_history"})
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        history = self._coordinator._router.get_user_history(self._user_id)
+        # Cap the live attribute to the newest 20 entries; with
+        # keep_history_forever the full history is unbounded.
+        history = self._coordinator._router.get_user_history(self._user_id)[-20:]
         return {
             "weight_history": [
                 self._coordinator.format_measurement_for_attribute(
