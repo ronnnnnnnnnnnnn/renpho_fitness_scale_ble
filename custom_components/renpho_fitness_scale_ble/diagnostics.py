@@ -81,7 +81,7 @@ async def async_get_config_entry_diagnostics(
     user_history: dict[str, dict[str, Any]] = {}
     for profile in coordinator.get_user_profiles():
         user_id = profile.get("user_id", "")
-        history = coordinator._router.get_user_history(user_id)
+        history = coordinator.get_recent_user_history(user_id)
         latest = history[-1] if history else None
         user_history[user_id] = {
             "history_count": len(history),

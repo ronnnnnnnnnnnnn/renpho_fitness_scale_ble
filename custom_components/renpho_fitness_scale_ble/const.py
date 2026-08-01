@@ -60,6 +60,13 @@ CONF_ENABLE_LIBRARY_LOGGING = "enable_library_logging"
 HISTORY_RETENTION_DAYS = 90
 MAX_HISTORY_SIZE = 100
 
+# Cap on how many history entries the weight sensor's `weight_history`
+# attribute exposes. The recorder silently drops ALL of a state's attributes
+# past its 16 KB limit (MAX_STATE_ATTRS_BYTES); at ~239 bytes/entry that
+# triggers around 68 entries — under the default MAX_HISTORY_SIZE above, so
+# the attribute must stay capped regardless of the retention settings.
+WEIGHT_HISTORY_ATTR_LIMIT = 20
+
 # --- Body fat algorithm identifiers (selected via use_alternative_algorithm boolean) ---
 ALGORITHM_DEFAULT = 0x04
 ALGORITHM_ALTERNATIVE = 0x03

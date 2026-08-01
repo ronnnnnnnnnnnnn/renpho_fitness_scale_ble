@@ -33,6 +33,7 @@ from .const import (
     DOMAIN,
     PROTOCOL_AABB,
     PROTOCOL_QN,
+    WEIGHT_HISTORY_ATTR_LIMIT,
     get_sensor_unique_id,
 )
 from .coordinator import ScaleDataUpdateCoordinator
@@ -171,29 +172,38 @@ class ScaleUserSensor(RestoreSensor):
 class ScaleUserWeightSensor(ScaleUserSensor):
     """Weight sensor with `weight_history` extra attribute.
 
-    The history is formatted via the coordinator's
-    ``format_measurement_for_attribute`` helper so weight values are shown
-    in the user's chosen display unit (kg or lb), matching the sensor's
-    own displayed value.
+    The history is ordered oldest→newest and formatted via the
+    coordinator's ``format_measurement_for_attribute`` helper; weight
+    values are converted to the unit the entity's state is actually
+    displayed in (including per-entity registry overrides), so attribute
+    and state always agree.
     """
 
     # Never record the history attribute: past the recorder's 16 KB attribute
-    # limit (MAX_STATE_ATTRS_BYTES, ~68 entries) the recorder stores {} for
-    # ALL of the state's attributes, and statistics compilation then sees a
-    # state without unit_of_measurement and suppresses long-term statistics.
+    # limit (MAX_STATE_ATTRS_BYTES, ~68 entries at ~239 bytes each) the
+    # recorder stores {} for ALL of the state's attributes, and statistics
+    # compilation then sees a state without unit_of_measurement and
+    # suppresses long-term statistics. That threshold is crossed at the
+    # DEFAULT max_history_size of 100 — not only with keep_history_forever.
     _unrecorded_attributes = frozenset({"weight_history"})
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        # Cap the live attribute to the newest 20 entries; with
-        # keep_history_forever the full history is unbounded.
-        history = self._coordinator._router.get_user_history(self._user_id)[-20:]
+        # Newest WEIGHT_HISTORY_ATTR_LIMIT entries, listed oldest→newest
+        # (the pending diagnostic is the opposite — newest→oldest).
+        history = self._coordinator.get_recent_user_history(
+            self._user_id, limit=WEIGHT_HISTORY_ATTR_LIMIT
+        )
         return {
             "weight_history": [
                 self._coordinator.format_measurement_for_attribute(
                     measurement_id=m.measurement_id,
                     timestamp_iso=m.timestamp.isoformat(),
                     weight_kg=m.weight_kg,
+                    # The unit the state itself is rendered in (registry
+                    # override → suggested → native), so attribute and
+                    # state can never disagree.
+                    display_unit=self.unit_of_measurement,
                     body_fat=(m.raw or {}).get("body_fat"),
                     resistance_1=(m.raw or {}).get("resistance_1"),
                     resistance_2=(m.raw or {}).get("resistance_2"),
@@ -283,6 +293,9 @@ class ScaleUserDirectorySensor(SensorEntity):
     _attr_name = "User Directory"
     _attr_icon = "mdi:account-multiple"
 
+    # Bounded, but a pure listing — recording it just churns database rows.
+    _unrecorded_attributes = frozenset({"users"})
+
     def __init__(
         self,
         device_name: str,
@@ -330,6 +343,12 @@ class ScalePendingMeasurementsSensor(SensorEntity):
     _attr_name = "Pending Measurements"
     _attr_icon = "mdi:clipboard-list"
 
+    # The pending list has no count cap (only 24 h age pruning), so it is
+    # structurally unbounded — past the recorder's 16 KB attribute limit the
+    # recorder stores {} for ALL attributes. It's a diagnostic work-queue
+    # with no history value anyway.
+    _unrecorded_attributes = frozenset({"pending"})
+
     def __init__(
         self,
         device_name: str,
@@ -371,6 +390,9 @@ class ScalePendingMeasurementsSensor(SensorEntity):
             )
             for mid, info in self._coordinator.get_pending_measurements().items()
         ]
+        # Newest→oldest — deliberately opposite to `weight_history`
+        # (oldest→newest): pending entries are a work-queue where the most
+        # recent unattributed weigh-in is the one being acted on.
         pending.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return {"pending": pending}
 

@@ -961,6 +961,14 @@ class ScaleDataUpdateCoordinator:
         """Return a copy of the current user-profile list."""
         return deepcopy(self._user_profiles)
 
+    def get_recent_user_history(
+        self, user_id: str, limit: int | None = None
+    ) -> list[WeightMeasurement]:
+        """Return this user's history, oldest→newest, optionally only the
+        newest `limit` entries."""
+        history = self._router.get_user_history(user_id)
+        return history[-limit:] if limit else history
+
     def set_config_entry_id(self, entry_id: str) -> None:
         """Cache the config entry id for `_update_config_entry` calls later."""
         self._config_entry_id = entry_id
@@ -2235,7 +2243,9 @@ class ScaleDataUpdateCoordinator:
                 "resistance_1": info.get("resistance_1"),
                 "resistance_2": info.get("resistance_2"),
                 "body_fat": info.get("body_fat"),
-                "timestamp": info.get("timestamp"),
+                # Default to "" so a missing timestamp never persists as JSON
+                # null — `_parse_iso_utc` treats "" as unparseable input.
+                "timestamp": info.get("timestamp", ""),
                 "timestamp_display": info.get("timestamp_display"),
                 "candidates": list(info.get("candidates", [])),
                 "raw_measurement": info["raw_measurement"].to_dict(),
@@ -2315,6 +2325,12 @@ class ScaleDataUpdateCoordinator:
         values they had when their measurements were recorded.
         """
         # Refresh router-managed history for every configured user.
+        #
+        # Mutating m.raw in place only works because the router's
+        # get_user_history returns a SHALLOW copy sharing the
+        # WeightMeasurement objects (multi_user_scale_core router.py
+        # returns `list(...)`); if the library ever deep-copies, this
+        # refresh silently becomes a no-op.
         for user_profile in self._user_profiles:
             user_id = user_profile.get(CONF_USER_ID)
             if user_id is None:
@@ -2567,16 +2583,18 @@ class ScaleDataUpdateCoordinator:
         return None
 
     @staticmethod
-    def _parse_iso_utc(iso_timestamp: str) -> datetime:
+    def _parse_iso_utc(iso_timestamp: str | None) -> datetime:
         """Parse an ISO 8601 timestamp, treating naive values as UTC.
 
         Tolerates a trailing ``Z`` (older serialized state, external
         producers) and a missing tzinfo (legacy persisted entries from
-        any earlier code path that wrote naive strings). Raises
-        ``TypeError`` / ``ValueError`` on unparseable input — callers
-        decide how to fall back.
+        any earlier code path that wrote naive strings). ``None`` is
+        coerced to ``""`` so it raises ``ValueError`` like any other
+        unparseable input (rather than ``AttributeError``, which no
+        caller catches); callers decide how to fall back on
+        ``TypeError`` / ``ValueError``.
         """
-        s = iso_timestamp.replace("Z", "+00:00")
+        s = (iso_timestamp or "").replace("Z", "+00:00")
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -2649,12 +2667,16 @@ class ScaleDataUpdateCoordinator:
         resistance_1: int | float | None = None,
         resistance_2: int | float | None = None,
         timestamp_display: str | None = None,
+        display_unit: str | None = None,
     ) -> dict[str, Any]:
         """Build a dict representation of a measurement for sensor attributes.
 
-        Weight is converted to the user-chosen display unit so values shown
-        in ``weight_history`` and the pending-measurements diagnostic match
-        what the rest of the integration's UI shows.
+        Weight is converted to ``display_unit`` (a ``UnitOfMass`` value —
+        pass the unit the calling entity's state is actually rendered in,
+        so the attribute can't disagree with a per-entity registry
+        override). When ``display_unit`` is None, the integration-wide
+        display-unit option is used instead (pending diagnostic, which has
+        no meaningful per-entity weight unit).
 
         Two timestamp fields are emitted with distinct purposes:
 
@@ -2666,18 +2688,21 @@ class ScaleDataUpdateCoordinator:
           or in the pending dict (pending path); only as a fallback for
           missing values do we re-render here.
         """
-        if weight_kg is None:
+        target = display_unit or (
+            UnitOfMass.POUNDS
+            if self._display_unit == WeightUnit.LB
+            else UnitOfMass.KILOGRAMS
+        )
+        # Corrupted persisted pending data can hand us a non-numeric
+        # weight_kg; treat it like None rather than letting MassConverter
+        # raise inside async_write_ha_state(). bool is excluded — it's an
+        # int subclass but never a valid weight.
+        if not isinstance(weight_kg, (int, float)) or isinstance(weight_kg, bool):
             weight_value: float | None = None
-        elif self._display_unit == WeightUnit.LB:
-            weight_value = round(
-                MassConverter.convert(
-                    weight_kg, UnitOfMass.KILOGRAMS, UnitOfMass.POUNDS
-                ),
-                1,
-            )
         else:
-            weight_value = round(weight_kg, 2)
-        unit = "lb" if self._display_unit == WeightUnit.LB else "kg"
+            weight_value = round(
+                MassConverter.convert(weight_kg, UnitOfMass.KILOGRAMS, target), 2
+            )
         if timestamp_display is None:
             timestamp_display = self._format_notification_timestamp(timestamp_iso)
         out: dict[str, Any] = {
@@ -2685,7 +2710,7 @@ class ScaleDataUpdateCoordinator:
             "timestamp": timestamp_iso,
             "timestamp_display": timestamp_display,
             "weight": weight_value,
-            "weight_unit": unit,
+            "weight_unit": str(target),
             "resistance_1": resistance_1,
             "resistance_2": resistance_2,
         }
