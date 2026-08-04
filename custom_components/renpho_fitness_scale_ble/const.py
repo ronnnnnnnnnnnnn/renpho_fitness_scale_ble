@@ -71,14 +71,17 @@ WEIGHT_HISTORY_ATTR_LIMIT = 20
 ALGORITHM_DEFAULT = 0x04
 ALGORITHM_ALTERNATIVE = 0x03
 
-# Synthetic impedance used to derive body composition for the broadcast (AABB)
-# variant, which doesn't seem to actually transmit impedance.
+# Synthetic impedance used to derive body composition when the scale reports
+# no resistance: the broadcast (AABB) variant doesn't seem to actually transmit
+# impedance, and some QN models (e.g. the R-MSB01) obfuscate their resistance
+# fields on the wire so the library withholds them.
 # The library's body-fat algorithms are near-impedance-independent in this band anyway
-# (verified: <1pp change from R=300-900), so the exact value barely matters.
+# (verified: <1pp change from R=300-900; worst case ±0.5pp of body fat across
+# the plausible 350-900 Ω range), so the exact value barely matters.
 # ~500 ohms seems to reproduce the app's numbers pretty closely, so that's what we use.
 # The result is an anthropometric estimate (weight/height/age/sex), not a real BIA
 # measurement — see the AABB notes in the README.
-AABB_SYNTHETIC_RESISTANCE = 500
+SYNTHETIC_RESISTANCE = 500
 
 
 def parse_notify_service(stored: str) -> tuple[str, str]:

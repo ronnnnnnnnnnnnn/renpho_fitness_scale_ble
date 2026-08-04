@@ -17,7 +17,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from math import floor
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal
 
 from aioesphomeapi import APIClient, BluetoothProxyFeature
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
@@ -53,8 +53,18 @@ from multi_user_scale_core import (
     WeightRouter,
 )
 from renpho_escs20m import (
+    BMI_KEY,
+    BMR_KEY,
+    BODY_AGE_KEY,
     BODY_FAT_KEY,
+    BODY_SCORE_KEY,
+    BODY_SHAPE_KEY,
+    BODY_WATER_KEY,
+    BONE_MASS_KEY,
     BluetoothScanningMode,
+    FAT_FREE_MASS_KEY,
+    MUSCLE_MASS_KEY,
+    PROTEIN_KEY,
     Profile,
     ProfileResolver,
     RESISTANCE_1_KEY,
@@ -62,15 +72,18 @@ from renpho_escs20m import (
     RenphoAABBScale,
     RenphoQNScale,
     RenphoScale,
+    SKELETAL_MUSCLE_KEY,
+    SUBCUTANEOUS_FAT_KEY,
     ScaleData,
     ScaleProtocol,
     Sex,
+    VISCERAL_FAT_KEY,
     WEIGHT_KEY,
     WeightUnit,
 )
+from renpho_escs20m.detection import has_obfuscated_resistance, sends_metrics_panel
 
 from .const import (
-    AABB_SYNTHETIC_RESISTANCE,
     ALGORITHM_ALTERNATIVE,
     ALGORITHM_DEFAULT,
     CONF_ATHLETE,
@@ -92,6 +105,7 @@ from .const import (
     PASSIVE_SCAN_ISSUE_ID,
     PROTOCOL_AABB,
     PROTOCOL_QN,
+    SYNTHETIC_RESISTANCE,
     parse_notify_service,
 )
 
@@ -217,6 +231,49 @@ _BODY_METRIC_KEYS: tuple[str, ...] = (
     "basal_metabolic_rate",
 )
 
+# On-device body-composition panel (models like the R-MSB01 compute the full
+# panel on-scale and the library merges it into the measurement callback).
+#
+# All panel keys the library can report. Everything present in a reading is
+# persisted in the measurement's `raw["panel"]` — including the five metrics
+# without a matching entity (visceral fat, body age, subcutaneous fat, body
+# score, body shape) — so the data is there if entities for them are ever
+# added, but only `_PANEL_KEY_TO_METRIC` below decides what reaches sensors.
+_PANEL_KEYS: tuple[str, ...] = (
+    BMI_KEY,
+    BODY_WATER_KEY,
+    MUSCLE_MASS_KEY,
+    VISCERAL_FAT_KEY,
+    BODY_AGE_KEY,
+    BMR_KEY,
+    PROTEIN_KEY,
+    BONE_MASS_KEY,
+    FAT_FREE_MASS_KEY,
+    SUBCUTANEOUS_FAT_KEY,
+    SKELETAL_MUSCLE_KEY,
+    BODY_SCORE_KEY,
+    BODY_SHAPE_KEY,
+)
+
+# Library panel key → the key our sensor entities listen on, for the panel
+# metrics that overlap the `BodyMetrics`-derived set. Each maps onto the
+# SAME entity key, so a given user's sensor series is fed by whichever
+# source the device provides — scale-provided on panel models,
+# library-computed elsewhere — without parallel duplicate entities. This is
+# deliberately NOT all of `_PANEL_KEYS`: the integration exposes the same
+# entity set on every device (adding entities later is non-breaking;
+# removing them from users' dashboards and statistics is not).
+_PANEL_KEY_TO_METRIC: dict[str, str] = {
+    BMI_KEY: "body_mass_index",
+    BODY_WATER_KEY: "body_water_percentage",
+    MUSCLE_MASS_KEY: "muscle_mass",
+    BMR_KEY: "basal_metabolic_rate",
+    PROTEIN_KEY: "protein_percentage",
+    BONE_MASS_KEY: "bone_mass",
+    FAT_FREE_MASS_KEY: "fat_free_mass",
+    SKELETAL_MUSCLE_KEY: "skeletal_muscle_percentage",
+}
+
 
 # Country codes whose default time format is 12-hour. Used as a fallback
 # heuristic when ``hass.config.time_format`` is not explicitly set.
@@ -253,32 +310,6 @@ def _get_bluetooth_manager(hass: HomeAssistant) -> Any | None:
         return habluetooth_get_manager()
     except Exception:  # noqa: BLE001 - RuntimeError when not yet set
         return None
-
-
-class _BluetoothTopology(NamedTuple):
-    """The slice of HA's Bluetooth topology this integration is built on.
-
-    Used as the snapshot for relevance-filtering scanner-registration
-    events (see `_topology_unchanged_since_last_start`). Scanner sources
-    belonging to other integrations (e.g. Shelly BLE proxies) are
-    deliberately not represented.
-    """
-
-    native: bool
-    native_passive: bool
-    native_sources: frozenset[str]
-    # bleak-esphome ESPHomeClientData objects; held strongly so identity
-    # (`is`) comparison against a later walk is sound.
-    esphome_client_data: tuple[Any, ...]
-
-
-class _TopologyScan(NamedTuple):
-    """Result of a `_scan_bluetooth_topology` walk."""
-
-    # False when native-adapter detection errored - the walk's topology is
-    # then untrustworthy and must never be used to suppress restarts.
-    adapter_check_ok: bool
-    topology: _BluetoothTopology
 
 
 class BleakScannerESPHome(BaseBleakScanner):
@@ -957,6 +988,18 @@ class ScaleDataUpdateCoordinator:
         self.address = address
         self.device_name = device_name
         self._protocol = protocol
+        # Whether this device's resistance fields are obfuscated on the wire
+        # (e.g. the R-MSB01) — the library withholds them, so off-scale body
+        # fat recomputation must fall back to the synthetic resistance the
+        # same way the AABB variant does. Per-device, resolved once from the
+        # address (the model identifier only travels in the scan response,
+        # which isn't guaranteed to be available here).
+        self._obfuscated_resistance = has_obfuscated_resistance(address)
+        # Whether this device computes the body-composition panel on-device.
+        # Only used to log when a panel-capable scale delivers a reading
+        # WITHOUT its panel (frames lost, or arrived after the library's
+        # merge window) — panel handling itself keys off reading content.
+        self._panel_device = sends_metrics_panel(address)
         self._user_profiles = deepcopy(user_profiles)
         # Note: dict values are aliased into _user_profiles. Mutate user-profile
         # dicts via one of these collections only, never via both, to avoid
@@ -1003,19 +1046,6 @@ class ScaleDataUpdateCoordinator:
         # made from `_async_registration_changed`, used to enforce
         # `REGISTRATION_PREEMPT_DEBOUNCE_SECONDS` on the pre-emption path.
         self._last_restart_attempt_monotonic: float | None = None
-        # Relevance filter for scanner-registration events (both only
-        # touched under `_start_lock`, like the rest of the restart state).
-        # `_pending_topology` is the topology snapshot captured by the
-        # `_get_bluetooth_scanner` walk the scanner was built from;
-        # `_last_topology` is that snapshot promoted once the client
-        # actually started, and None whenever no client is running or the
-        # last start failed (None always lets a restart proceed). Holding
-        # the ESPHomeClientData objects strongly is deliberate: identity
-        # comparison against them detects a proxy that bounced (bleak-esphome
-        # builds a new client_data per connect) even when the source name
-        # is unchanged, and the held references make `is` checks sound.
-        self._pending_topology: _BluetoothTopology | None = None
-        self._last_topology: _BluetoothTopology | None = None
         # Set by `_get_bluetooth_scanner` when it returns None *and* the
         # native adapter can't do passive scanning, i.e. the scale library
         # will run its own ACTIVE scanner. Drives the boot deferral in
@@ -1094,121 +1124,50 @@ class ScaleDataUpdateCoordinator:
                 "No connectable Bluetooth scanner available"
             )
 
-    def _scan_bluetooth_topology(self, manager: Any) -> _TopologyScan:
-        """Discover the Bluetooth topology this integration actually uses.
+    def _registration_event_concerns_us(self, registration: Any) -> bool:
+        """Whether a registration event's scanner is one this entry scans with.
 
-        Shared by `_get_bluetooth_scanner` (to build the scanner) and
-        `_topology_unchanged_since_last_start` (to relevance-filter
-        scanner-registration events) so both always see the same picture.
-        Scanner sources belonging to other integrations (e.g. Shelly BLE
-        proxies) are deliberately invisible here - they play no part in
-        this integration's scanning.
+        This integration scans only via native adapters and ESPHome
+        proxies; events for other integrations' scanners (e.g. Shelly BLE
+        proxies re-registering on every WebSocket reconnect) carry no
+        information for us, and restarting on them would abort an
+        in-flight connection/measurement for nothing. The event payload
+        names the exact scanner that changed, so classification is direct:
+        a native adapter is recognized by its source key (adapter address
+        or name), an ESPHome proxy by its bluetooth config entry
+        (source_domain == "esphome") or - covering an ADDED event racing
+        that entry's creation - by its scanner carrying bleak-esphome's
+        client_data connector shape (the same shape
+        `_get_bluetooth_scanner` consumes). Any inability to classify (no
+        source, manager unavailable, unexpected shapes) counts as
+        relevant, so a needed restart is never wrongly suppressed.
         """
-        sources = manager._sources
-        native = False
-        # Whether BlueZ exposes org.bluez.AdvertisementMonitorManager1
-        # for the adapter (bluetooth-adapters reports this as
-        # `passive_scan`) - i.e. whether bleak's passive scanning can
-        # work. Absent on Linux when BlueZ experimental features are
-        # disabled.
-        native_passive = False
-        native_sources: set[str] = set()
-
-        # Check for native adapters with better error handling
-        adapter_check_ok = True
+        scanner = getattr(registration, "scanner", None)
+        source = getattr(scanner, "source", None)
+        if not source:
+            return True
         try:
-            for adapter in manager._bluetooth_adapters.adapters.values():
-                if sources.get(adapter["address"]) is not None:
-                    if not native:
-                        native = True
-                        native_passive = bool(adapter.get("passive_scan"))
-                        _LOGGER.debug("Found native Bluetooth adapter: %s", adapter)
-                    native_sources.add(adapter["address"])
-            if not native:
-                for name, details in manager._bluetooth_adapters.adapters.items():
-                    if sources.get(name) is not None:
-                        if not native:
-                            native = True
-                            native_passive = bool(details.get("passive_scan"))
-                            _LOGGER.debug("Found native Bluetooth adapter: %s", details)
-                        native_sources.add(name)
-        except (AttributeError, KeyError) as err:
-            _LOGGER.warning("Error checking native Bluetooth adapters: %s", err)
-            native = False
-            native_passive = False
-            native_sources = set()
-            adapter_check_ok = False
-
-        # Get ESPHome proxies with error handling. Keep the whole
-        # bleak-esphome ESPHomeClientData (client + cached device_info +
-        # api_version), not just the APIClient: the scanners use the
-        # cached info to avoid any wire round-trips at start().
-        esphome_clients: list[Any] = []
-        try:
-            proxies = [
-                item.data["source"]
-                for item in self.hass.config_entries.async_entries("bluetooth")
-                if item.data.get("source_domain") == "esphome"
-            ]
-            esphome_clients = [
-                sources.get(s).connector.client.keywords["client_data"]
-                for s in proxies
-                if sources.get(s)
-            ]
-            _LOGGER.debug("Found %d ESPHome Bluetooth proxies", len(esphome_clients))
-        except (AttributeError, KeyError, TypeError) as err:
-            _LOGGER.warning("Error getting ESPHome clients: %s", err)
-            esphome_clients = []
-
-        return _TopologyScan(
-            adapter_check_ok=adapter_check_ok,
-            topology=_BluetoothTopology(
-                native=native,
-                native_passive=native_passive,
-                native_sources=frozenset(native_sources),
-                esphome_client_data=tuple(esphome_clients),
-            ),
-        )
-
-    def _topology_unchanged_since_last_start(self) -> bool:
-        """Whether the topology matches what the running client was built from.
-
-        True only when a client is running (``_last_topology`` set) AND a
-        fresh topology walk matches the snapshot it was built from - in
-        that case a scanner-registration event carries no information for
-        this entry (e.g. a Shelly proxy's scanner re-registering) and the
-        restart can be skipped instead of aborting an in-flight
-        measurement session. ESPHome proxies are compared by
-        ``ESPHomeClientData`` *identity*: bleak-esphome builds a new
-        client_data on every proxy (re)connect, so a proxy that bounced -
-        even with the same source name - never compares as unchanged
-        (our message callbacks died with its old connection and the
-        rebuild must proceed). Any uncertainty (no snapshot, no manager,
-        detection error) returns False so the restart proceeds.
-        """
-        last = self._last_topology
-        if last is None:
-            return False
-        manager = _get_bluetooth_manager(self.hass)
-        if not manager:
-            return False
-        try:
-            scan = self._scan_bluetooth_topology(manager)
-        except Exception:  # noqa: BLE001 - unknown topology must not filter
-            return False
-        if not scan.adapter_check_ok:
-            return False
-        current = scan.topology
-        return (
-            current.native == last.native
-            and current.native_passive == last.native_passive
-            and current.native_sources == last.native_sources
-            and len(current.esphome_client_data) == len(last.esphome_client_data)
-            and all(
-                any(client_data is held for held in last.esphome_client_data)
-                for client_data in current.esphome_client_data
+            manager = _get_bluetooth_manager(self.hass)
+            if not manager:
+                return True
+            for name, details in manager._bluetooth_adapters.adapters.items():
+                if source in (name, details.get("address")):
+                    return True
+            for entry in self.hass.config_entries.async_entries("bluetooth"):
+                if (
+                    entry.data.get("source") == source
+                    and entry.data.get("source_domain") == "esphome"
+                ):
+                    return True
+            connector_client = getattr(
+                getattr(scanner, "connector", None), "client", None
             )
-        )
+            keywords = getattr(connector_client, "keywords", None)
+            if isinstance(keywords, dict) and "client_data" in keywords:
+                return True
+        except Exception:  # noqa: BLE001 - unclassifiable must not filter
+            return True
+        return False
 
     async def _get_bluetooth_scanner(self) -> BaseBleakScanner | None:
         """Get the optimal Bluetooth scanner based on available resources.
@@ -1220,10 +1179,6 @@ class ScaleDataUpdateCoordinator:
             BluetoothNotAvailableError: If bluetooth_manager is not available or
                 no Bluetooth adapter/proxy is available.
         """
-        # Reset the snapshot first: on any failure below it must not go
-        # stale, or a later successful `_async_start` could promote a
-        # topology that this walk didn't actually produce.
-        self._pending_topology = None
         try:
             manager = _get_bluetooth_manager(self.hass)
             if not manager:
@@ -1232,19 +1187,60 @@ class ScaleDataUpdateCoordinator:
                     "Bluetooth manager not available - Bluetooth integration may still be initializing"
                 )
 
-            scan = self._scan_bluetooth_topology(manager)
-            adapter_check_ok = scan.adapter_check_ok
-            native = scan.topology.native
-            native_passive = scan.topology.native_passive
-            esphome_clients = scan.topology.esphome_client_data
+            # Get Bluetooth sources
+            sources = manager._sources
+            native = False
+            # Whether BlueZ exposes org.bluez.AdvertisementMonitorManager1
+            # for the adapter (bluetooth-adapters reports this as
+            # `passive_scan`) - i.e. whether bleak's passive scanning can
+            # work. Absent on Linux when BlueZ experimental features are
+            # disabled.
+            native_passive = False
 
-            # Snapshot the topology this scanner (or the library fallback)
-            # is being built from. Promoted to `_last_topology` only once
-            # the client actually starts (see `_async_start`); used by
-            # `_topology_unchanged_since_last_start` to relevance-filter
-            # scanner-registration events. Skipped when adapter detection
-            # errored - an unknown topology must never suppress restarts.
-            self._pending_topology = scan.topology if adapter_check_ok else None
+            # Check for native adapters with better error handling
+            adapter_check_ok = True
+            try:
+                for adapter in manager._bluetooth_adapters.adapters.values():
+                    if sources.get(adapter["address"]) is not None:
+                        native = True
+                        native_passive = bool(adapter.get("passive_scan"))
+                        _LOGGER.debug("Found native Bluetooth adapter: %s", adapter)
+                        break
+                if not native:
+                    for name, details in manager._bluetooth_adapters.adapters.items():
+                        if sources.get(name) is not None:
+                            native = True
+                            native_passive = bool(details.get("passive_scan"))
+                            _LOGGER.debug("Found native Bluetooth adapter: %s", details)
+                            break
+            except (AttributeError, KeyError) as err:
+                _LOGGER.warning("Error checking native Bluetooth adapters: %s", err)
+                native = False
+                native_passive = False
+                adapter_check_ok = False
+
+            # Get ESPHome proxies with error handling. Keep the whole
+            # bleak-esphome ESPHomeClientData (client + cached device_info +
+            # api_version), not just the APIClient: the scanners use the
+            # cached info to avoid any wire round-trips at start().
+            esphome_clients: list[Any] = []
+            try:
+                proxies = [
+                    item.data["source"]
+                    for item in self.hass.config_entries.async_entries("bluetooth")
+                    if item.data.get("source_domain") == "esphome"
+                ]
+                esphome_clients = [
+                    sources.get(s).connector.client.keywords["client_data"]
+                    for s in proxies
+                    if sources.get(s)
+                ]
+                _LOGGER.debug(
+                    "Found %d ESPHome Bluetooth proxies", len(esphome_clients)
+                )
+            except (AttributeError, KeyError, TypeError) as err:
+                _LOGGER.warning("Error getting ESPHome clients: %s", err)
+                esphome_clients = []
 
             # Surface (or clear) the passive-scanning repair issue. Tied to
             # the host capability, not to which scanner path is chosen
@@ -1574,11 +1570,6 @@ class ScaleDataUpdateCoordinator:
         Must be invoked under ``_start_lock`` to serialize concurrent
         restart attempts.
         """
-        # No client is (or will shortly be) running until this attempt
-        # succeeds - registration events must not be filtered while we're
-        # in flux, and a failed attempt must leave every event acting as a
-        # restart trigger.
-        self._last_topology = None
         if self._scale is not None:
             try:
                 await self._scale.async_stop()
@@ -1679,14 +1670,6 @@ class ScaleDataUpdateCoordinator:
                 logger=self._library_logger(),
             )
         await self._scale.async_start()
-        # The client is running on the topology `_get_bluetooth_scanner`
-        # walked (NOT one recomputed now: a proxy that bounced during the
-        # slow BLE start above must still register as changed, or the
-        # queued registration event would be filtered out and the scanner
-        # left listening on a dead connection). From here on, registration
-        # events that don't change this snapshot are irrelevant and get
-        # skipped instead of aborting the client.
-        self._last_topology = self._pending_topology
 
     @callback
     def _registration_changed(self, registration: Any) -> None:
@@ -1750,21 +1733,22 @@ class ScaleDataUpdateCoordinator:
                     "coordinator was stopped; ignoring"
                 )
                 return
-            if self._topology_unchanged_since_last_start():
-                # The event is real but irrelevant to this entry: the
-                # native adapter and every ESPHome proxy we're built on are
-                # exactly as the running client left them. Typically another
-                # integration's scanner re-registering (e.g. Shelly BLE
-                # proxies bounce on every WebSocket reconnect) - restarting
-                # here would abort an in-flight connection/measurement for
-                # nothing. Deferred debounce retries also land here and
-                # become no-ops when an interim rebuild already captured
-                # the current topology.
+            if registration is not None and not self._registration_event_concerns_us(
+                registration
+            ):
+                # The event is real but names a scanner this entry doesn't
+                # use - typically another integration's scanner
+                # re-registering (e.g. Shelly BLE proxies bounce on every
+                # WebSocket reconnect). Restarting on it would abort an
+                # in-flight connection/measurement for nothing. Deferred
+                # debounce/backoff retries pass no registration and always
+                # proceed, preserving the invariant that every relevant
+                # event leads to a restart attempt.
                 source = getattr(getattr(registration, "scanner", None), "source", None)
                 _LOGGER.debug(
-                    "Scanner registration changed (source: %s) but the "
-                    "Bluetooth topology this entry uses is unchanged; "
-                    "skipping scale client restart",
+                    "Scanner registration changed (source: %s) but this "
+                    "entry only scans via native adapters and ESPHome "
+                    "proxies; skipping scale client restart",
                     source or "unknown",
                 )
                 return
@@ -1963,10 +1947,6 @@ class ScaleDataUpdateCoordinator:
                     # task-exception traceback.
                     _LOGGER.exception("Error stopping scale client")
                 self._scale = None
-            # No running client - release the topology snapshot (and the
-            # ESPHomeClientData references it holds alive)
-            self._last_topology = None
-            self._pending_topology = None
 
     # ------------------------------------------------------------------
     # Listener registries
@@ -2003,15 +1983,7 @@ class ScaleDataUpdateCoordinator:
         last = self._router.get_user_last_measurement(user_id)
         if last is not None:
             data = self._scale_data_from_measurement(last)
-            body_fat = data.measurements.get(BODY_FAT_KEY)
-            if body_fat is None:
-                body_fat = self._compute_body_fat_off_scale(data, user_id)
-                if body_fat is not None:
-                    data.measurements[BODY_FAT_KEY] = body_fat
-            if body_fat is not None:
-                self._derive_body_metrics_into(data, user_id, body_fat)
-            else:
-                self._maybe_compute_bmi(data, user_id)
+            self._attach_body_composition(data, user_id)
             try:
                 callback(data)
             except Exception:
@@ -2073,6 +2045,21 @@ class ScaleDataUpdateCoordinator:
         # through router persistence; refreshed by `_on_core_config_updated`
         # if the user changes their HA time-format / timezone / country.
         timestamp_iso = timestamp.isoformat()
+        # Scale-provided body-composition panel (panel-sending models only).
+        # Persisted in `raw` so it travels with the measurement through
+        # router persistence and replay, same as body_fat / resistance.
+        panel = self._extract_scale_panel(data)
+        if not panel and self._panel_device:
+            # Field-visibility for how often the library's ~1 s panel merge
+            # window is actually missed in practice (lost frames, early
+            # disconnect, flaky proxy). Live readings only — replays of a
+            # recomputed measurement are expected to be panel-less.
+            _LOGGER.debug(
+                "Panel-capable scale %s delivered a reading without its "
+                "body-composition panel; body metrics for this reading "
+                "will be library-computed",
+                self.address,
+            )
         measurement = WeightMeasurement(
             weight_kg=weight_kg,
             timestamp=timestamp,
@@ -2081,6 +2068,7 @@ class ScaleDataUpdateCoordinator:
                 "resistance_1": data.measurements.get(RESISTANCE_1_KEY),
                 "resistance_2": data.measurements.get(RESISTANCE_2_KEY),
                 "body_fat": data.measurements.get(BODY_FAT_KEY),
+                "panel": panel or None,
                 "timestamp_display": self._format_notification_timestamp(timestamp_iso),
             },
         )
@@ -2131,13 +2119,51 @@ class ScaleDataUpdateCoordinator:
         self._emit_data_for_user(user_id, data)
         self._update_config_entry()
 
-    def _emit_data_for_user(self, user_id: str, data: ScaleData) -> None:
-        """Derive body metrics for ``data`` and fan out to listeners.
+    def _extract_scale_panel(self, data: ScaleData) -> dict[str, float]:
+        """Return the scale-provided panel entries present in ``data``."""
+        return {
+            key: data.measurements[key]
+            for key in _PANEL_KEYS
+            if data.measurements.get(key) is not None
+        }
 
-        Does NOT touch the router — caller has either already recorded the
-        measurement or is replaying existing history. Used by both
-        ``_commit_measurement_to_user`` and ``_replay_latest_to_user``.
+    def _attach_body_composition(self, data: ScaleData, user_id: str) -> None:
+        """Populate ``data.measurements`` with the body-composition metric keys.
+
+        Source-of-truth policy: a reading that carries the scale's on-device
+        body-composition panel (panel-sending models like the R-MSB01) is
+        served entirely from the scale's values; everything else runs the
+        library-computed path (`BodyMetrics`, off-scale body fat). The two
+        sources are never mixed within one reading. Since panel
+        presence is a device capability, each device's long-term statistics
+        stay single-source; the one exception is a reading recomputed after
+        late assignment/reassignment on a panel device, where the panel is
+        (correctly) absent and the whole reading is library-computed for the
+        right user's profile.
         """
+        panel = self._extract_scale_panel(data)
+        if panel:
+            # Only the mapped (exposed) subset reaches sensor keys; the
+            # panel-only extras stay in `raw["panel"]` unexposed.
+            for lib_key, metric_key in _PANEL_KEY_TO_METRIC.items():
+                if lib_key in panel:
+                    data.measurements[metric_key] = panel[lib_key]
+            # On-device body fat rides the main measurement frame, not the
+            # panel, but it's scale-provided all the same — surface it under
+            # the entity key `_derive_body_metrics_into` would otherwise fill.
+            body_fat = data.measurements.get(BODY_FAT_KEY)
+            if body_fat is not None:
+                data.measurements["body_fat_percentage"] = body_fat
+            # BMI is the one sanctioned exception to "no gap-filling on a
+            # panel reading": it's pure arithmetic (weight/height²), not a
+            # formula-family choice, so computing it when a partial panel
+            # dropped BMI can only differ by rounding noise — whereas leaving
+            # it out would flip the BMI sensor to unavailable. Body fat gets
+            # no such fallback here: recomputing it would need the synthetic
+            # resistance and would be real cross-source mixing.
+            if "body_mass_index" not in data.measurements:
+                self._maybe_compute_bmi(data, user_id)
+            return
         body_fat = data.measurements.get(BODY_FAT_KEY)
         # If the scale didn't report body_fat (e.g., the resolver returned
         # None in multi-user mode and the scale ran the bootstrap profile
@@ -2151,6 +2177,15 @@ class ScaleDataUpdateCoordinator:
             self._derive_body_metrics_into(data, user_id, body_fat)
         else:
             self._maybe_compute_bmi(data, user_id)
+
+    def _emit_data_for_user(self, user_id: str, data: ScaleData) -> None:
+        """Attach body-composition metrics to ``data`` and fan out to listeners.
+
+        Does NOT touch the router — caller has either already recorded the
+        measurement or is replaying existing history. Used by both
+        ``_commit_measurement_to_user`` and ``_replay_latest_to_user``.
+        """
+        self._attach_body_composition(data, user_id)
         for cb in list(self._user_callbacks.get(user_id, [])):
             try:
                 cb(data)
@@ -2179,6 +2214,12 @@ class ScaleDataUpdateCoordinator:
             measurements[RESISTANCE_1_KEY] = raw["resistance_1"]
         if raw.get("resistance_2") is not None:
             measurements[RESISTANCE_2_KEY] = raw["resistance_2"]
+        # Scale-provided body-composition panel (panel-sending models).
+        # Restoring it under the library keys makes a replayed measurement
+        # take the same source-of-truth branch a live one did.
+        for lib_key, value in (raw.get("panel") or {}).items():
+            if lib_key in _PANEL_KEYS and value is not None:
+                measurements[lib_key] = value
         return ScaleData(
             name=self.device_name,
             address=self.address,
@@ -2266,19 +2307,23 @@ class ScaleDataUpdateCoordinator:
         correct frame value to feed ``calculate_body_fat`` for off-scale
         approximation; ``resistance_2`` is reserved for other uses.
 
-        The broadcast (AABB) variant transmits no impedance at all. When a full
-        profile (sex + birthdate) is configured for such a user, we substitute a
-        fixed synthetic resistance (``AABB_SYNTHETIC_RESISTANCE``) so the same
+        The broadcast (AABB) variant transmits no impedance at all, and some
+        QN models (e.g. the R-MSB01) obfuscate their resistance fields on the
+        wire so the library withholds them. When a full profile (sex +
+        birthdate) is configured for a user on such a device, we substitute a
+        fixed synthetic resistance (``SYNTHETIC_RESISTANCE``) so the same
         anthropometric formula runs — reproducing what the official Renpho app
-        shows. See ``const`` for why the exact value is immaterial.
+        shows. See ``const`` for why the exact value is immaterial. On normal
+        QN devices a missing resistance still means "no body fat" (e.g. the
+        user stood on the scale in socks), never a synthetic substitute.
         """
         profile = self._user_profiles_by_id.get(user_id)
         if not profile or not profile.get(CONF_BODY_METRICS_ENABLED):
             return None
         resistance = data.measurements.get(RESISTANCE_1_KEY)
         if resistance is None:
-            if self._protocol == PROTOCOL_AABB:
-                resistance = AABB_SYNTHETIC_RESISTANCE
+            if self._protocol == PROTOCOL_AABB or self._obfuscated_resistance:
+                resistance = SYNTHETIC_RESISTANCE
             else:
                 return None
         height_cm = profile.get(CONF_HEIGHT)
@@ -2374,6 +2419,10 @@ class ScaleDataUpdateCoordinator:
             "resistance_1": data.measurements.get(RESISTANCE_1_KEY),
             "resistance_2": data.measurements.get(RESISTANCE_2_KEY),
             "body_fat": data.measurements.get(BODY_FAT_KEY),
+            # Scale-provided panel, kept for the same defensive reason as
+            # body_fat above: an unresolved measurement was captured under
+            # the bootstrap profile, so in practice both are absent here.
+            "panel": self._extract_scale_panel(data) or None,
             "timestamp": timestamp_iso,
             "timestamp_display": ts_display,
             "candidates": candidate_ids,
@@ -2468,6 +2517,7 @@ class ScaleDataUpdateCoordinator:
                 "resistance_1": info.get("resistance_1"),
                 "resistance_2": info.get("resistance_2"),
                 "body_fat": info.get("body_fat"),
+                "panel": info.get("panel"),
                 # Default to "" so a missing timestamp never persists as JSON
                 # null — `_parse_iso_utc` treats "" as unparseable input.
                 "timestamp": info.get("timestamp", ""),
@@ -2506,6 +2556,7 @@ class ScaleDataUpdateCoordinator:
                 "resistance_1": info.get("resistance_1"),
                 "resistance_2": info.get("resistance_2"),
                 "body_fat": info.get("body_fat"),
+                "panel": info.get("panel"),
                 "timestamp": ts,
                 "timestamp_display": ts_display,
                 "candidates": list(info.get("candidates", [])),
@@ -2647,6 +2698,9 @@ class ScaleDataUpdateCoordinator:
             measurements[RESISTANCE_1_KEY] = pending["resistance_1"]
         if pending.get("resistance_2") is not None:
             measurements[RESISTANCE_2_KEY] = pending["resistance_2"]
+        for lib_key, value in (pending.get("panel") or {}).items():
+            if lib_key in _PANEL_KEYS and value is not None:
+                measurements[lib_key] = value
         data = ScaleData(
             name=self.device_name,
             address=self.address,
@@ -2687,11 +2741,13 @@ class ScaleDataUpdateCoordinator:
         their state reflects the post-reassign latest measurement (or
         ``unavailable`` if a user has no history left).
 
-        Body fat in the moved measurement is cleared. Whatever value was
-        there was computed against the *original* user's profile (sex,
-        age, height, athlete flag) — it would be wrong to attribute it
-        to a different user. The destination user's replay will then
-        recompute body fat off-scale from ``resistance_1`` + their own
+        Body fat — and the scale-provided body-composition panel, on
+        panel-sending models — in the moved measurement is cleared. Whatever
+        values were there were computed against the *original* user's
+        profile (sex, age, height, athlete flag) — it would be wrong to
+        attribute them to a different user. The destination user's replay
+        will then recompute body fat off-scale from ``resistance_1`` (or the
+        synthetic resistance, on devices that report none) + their own
         profile, so all derived metrics for them reflect *their* body.
         """
         try:
@@ -2703,6 +2759,7 @@ class ScaleDataUpdateCoordinator:
             return False
         if moved.raw is not None:
             moved.raw["body_fat"] = None
+            moved.raw["panel"] = None
         self._replay_latest_to_user(from_user_id)
         self._replay_latest_to_user(to_user_id)
         self._update_config_entry()

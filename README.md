@@ -25,18 +25,19 @@ This custom integration connects your Renpho ES-CS20M smart bathroom scale — a
   - Bone Mass
   - Protein Percentage
   - Basal Metabolic Rate
+- On models that compute the full body-composition panel on-device (currently the R-MSB01), the metrics above come straight from the scale
 - **Athlete mode** — per-user toggle for the scale's athlete-tuned body-fat algorithm
 - **Alternative body-fat algorithm** — per-user toggle to match the value shown by the official Renpho app
 - Customizable display units (kg, lb), applied both on the scale and in Home Assistant
 - ESPHome Bluetooth proxy support
-- Battery and firmware revision reported
+- Battery and firmware revision reported (the battery entity is disabled by default — see [Troubleshooting](#battery-sensor-missing-or-always-reads-100))
 - Direct Bluetooth communication (no internet or Renpho app required)
 
 ## Notes
 
 - The integration uses the [renpho-escs20m](https://github.com/ronnnnnnnnnnnnn/renpho-escs20m) Python library for BLE communication and [multi-user-scale-core](https://github.com/ronnnnnnnnnnnnn/multi-user-scale-core) for the multi-user routing logic.
 - The integration clears the scale's internal store of *offline* readings (weigh-ins taken while Home Assistant wasn't listening, e.g. during an HA restart) each time it connects. Those readings are not imported into Home Assistant, and because delivery deletes them from the scale, they won't show up in the official Renpho app either.
-- **ESCS20MA2 only**: The scale computes body fat *on-device*. The integration commits the user's profile (sex, age, height, athlete flag, algorithm choice) to the scale during the ~2-second measurement window — that's how the scale knows which body to compute against. When the resolver can't pick a single user confidently, the scale falls back to weight-only and the integration computes body fat **off-scale** when you later attribute the measurement to a specific user.
+- **Extended-flavor models only (e.g. `ESCS20MA2`, R-MSB01)**: The scale computes body fat *on-device*. The integration commits the user's profile (sex, age, height, athlete flag, algorithm choice) to the scale during the ~2-second measurement window — that's how the scale knows which body to compute against. When the resolver can't pick a single user confidently, the scale falls back to weight-only and the integration computes body fat **off-scale** when you later attribute the measurement to a specific user.
 
 ## Supported Devices
 
@@ -52,6 +53,9 @@ Confirmed-working:
 | ES-26M         | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
 | ES-30M         | `ES30MA2`   | `2A26P-ES30MA2`     |
 | ES-32MD        | `ESCS20MA2` | `2A26P-ESCS20MA2`   |
+| R-MSB01        | -           | `2A26P-RMSB01`      |
+
+- **R-MSB01** — a later hardware revision of the same platform. It computes the **full body-composition panel on-device** and sends it with each measurement, so the body-composition values come from the scale itself. The underlying library doesn't currently expose bioimpedance, so when a measurement has to be attributed to a user *after* the fact (late assignment or reassignment), body composition for that reading is recomputed as an estimate from weight, height, age and sex — the same approach used for the broadcast subvariant below.
 
 
 Experimental:
@@ -62,7 +66,7 @@ Experimental:
 | ES-CS20M       | -    | `2APXUES-CS20M`   | `0xaabb` (broadcast)   |
 
 - **Arboleaf CS20M** — QN-series hardware ships the same wire protocol on two GATT service layouts, and the integration handles both: the FFF0 layout used by the Renpho models above, and the FFE0 layout seen on some other QN scales. Full feature set.
-- **ES-CS20M (FCC ID `2APXUES-CS20M`)** — a **non-connectable** subvariant: it broadcasts weight in its BLE advertisements rather than connecting over GATT, using a different (`0xaabb`) protocol. This scale transmits no bioimpedance, so its body composition calculations do not use a real impedance measurement. Rather, it's an estimate based on just weight, height, age and sex (and athlete mode).
+- **ES-CS20M (FCC ID `2APXUES-CS20M`)** — a **non-connectable** subvariant: it broadcasts weight in its BLE advertisements rather than connecting over GATT, using a different (`0xaabb`) protocol. This scale transmits no bioimpedance, so its body composition calculations do not use a real impedance measurement. Rather, it's an estimate based on just weight, height, age and sex (and athlete mode). The estimate is characterized, not a guess: the body-fat formulas are only weakly sensitive to impedance (worst case about ±0.5 percentage points across the plausible range), and it closely reproduces what the official Renpho app shows for this scale.
 
 Known-incompatible:
 
@@ -158,6 +162,8 @@ If the measurement is ambiguous (e.g., two users have similar weights, or a new 
 
 When you finally attribute a pending measurement to a user, the integration computes that user's body fat **off-scale** from the captured measurement data and the user's profile, so all derived body metrics still populate.
 
+On models that don't report usable bioimpedance (the R-MSB01 and the broadcast subvariant), this off-scale computation cannot use a real impedance reading — body fat for such readings is an anthropometric estimate from weight, height, age and sex. In practice this matters less than it sounds: the body-fat formulas are only weakly sensitive to impedance (worst case about ±0.5 percentage points of body fat across the plausible impedance range), and the same approach reproduces the official Renpho app's numbers closely.
+
 ### Managing Users
 
 You can manage user profiles by navigating to your device in **Settings → Devices & Services → Renpho Fitness Scale BLE**. Click **CONFIGURE** to:
@@ -174,12 +180,12 @@ All three take the Home Assistant `device_id` of the scale plus a `user_id` (a s
 
 ### `renpho_fitness_scale_ble.assign_measurement`
 
-Assign a pending (ambiguous) measurement to a specific user. Triggers the same sensor updates as a live measurement, including off-scale body-fat computation if the user has body metrics enabled and the scale captured the necessary measurement data.
+Assign a pending (ambiguous) measurement to a specific user. Triggers the same sensor updates as a live measurement, including off-scale body-fat computation if the user has body metrics enabled — from the impedance the scale captured, or, on models that don't report usable impedance over BLE, the anthropometric estimate described under [Ambiguous Measurements](#ambiguous-measurements). (If a scale that does report impedance captured none for this measurement — e.g. the user weighed in with socks on — the reading stays weight-only.)
 
 **Example:**
 
 ```yaml
-service: renpho_fitness_scale_ble.assign_measurement
+action: renpho_fitness_scale_ble.assign_measurement
 data:
   device_id: <your_scale_device_id>
   measurement_id: "a3f8b2e0c4d149e6912f8a7b6c5d4e3f"
@@ -188,14 +194,14 @@ data:
 
 ### `renpho_fitness_scale_ble.reassign_measurement`
 
-Move a measurement from one user's history to another's. Useful when a measurement was auto-assigned to the wrong person. Body fat is intentionally cleared during the reassign (it was originally computed against the source user's profile); the destination user's body fat is recomputed off-scale from the captured measurement data.
+Move a measurement from one user's history to another's. Useful when a measurement was auto-assigned to the wrong person. Body fat is intentionally cleared during the reassign (it was originally computed against the source user's profile); the destination user's body fat is recomputed off-scale — from the captured impedance, or, on models that don't report usable impedance over BLE, the anthropometric estimate described under [Ambiguous Measurements](#ambiguous-measurements).
 
 If `measurement_id` is omitted, defaults to the most recent measurement for `from_user_id`.
 
 **Example:**
 
 ```yaml
-service: renpho_fitness_scale_ble.reassign_measurement
+action: renpho_fitness_scale_ble.reassign_measurement
 data:
   device_id: <your_scale_device_id>
   from_user_id: "john"
@@ -212,7 +218,7 @@ If `measurement_id` is omitted, defaults to the most recent measurement for `use
 **Example:**
 
 ```yaml
-service: renpho_fitness_scale_ble.remove_measurement
+action: renpho_fitness_scale_ble.remove_measurement
 data:
   device_id: <your_scale_device_id>
   user_id: "jane"
@@ -224,9 +230,9 @@ data:
 The integration creates two diagnostic sensors to provide visibility into its state:
 
 - **User Directory:** Shows the number of configured user profiles and lists their `user_id` and body-metric flags in the attributes.
-- **Pending Measurements:** Shows the number of ambiguous measurements awaiting manual assignment, with each measurement's `measurement_id`, timestamp (ISO + locale-formatted), weight, body fat (if reported), and resistance values in the attributes.
+- **Pending Measurements:** Shows the number of ambiguous measurements awaiting manual assignment, with each measurement's `measurement_id`, timestamp (ISO + locale-formatted), weight, body fat (if reported), and resistance values (when reported) in the attributes.
 
-The device's firmware revision is shown on its device card via the standard `sw_version` field; battery percentage is exposed as a regular sensor (not diagnostic).
+The device's firmware revision is shown on its device card via the standard `sw_version` field; battery percentage is exposed as a regular sensor (not diagnostic), disabled by default — see [Troubleshooting](#battery-sensor-missing-or-always-reads-100).
 
 ## Troubleshooting
 
@@ -245,6 +251,10 @@ This typically means one of two things:
 
 - **The scale isn't actually reachable** — most common. The scale's BLE chip emits occasional advertisements even when "off", but rejects connections outside its measurement window. These errors are usually harmless and stop happening as soon as the scale's session ends.
 - **Connection slot exhaustion** — your Bluetooth adapter (or ESPHome proxy) has hit its concurrent-connection limit. Built-in adapters typically support 5–7 concurrent BLE connections; if you have many connectable BLE devices, you may need to add an [ESPHome Bluetooth proxy](https://esphome.github.io/bluetooth-proxies/) near the scale.
+
+### Battery sensor missing or always reads 100%
+
+The battery entity exists but is **disabled by default**: on observed units the firmware reports a constant 100% over BLE and doesn't decrement it as the batteries drain — cells weak enough to need replacing still read 100%. A battery sensor that never drops would mislead dashboards and mean low-battery automations never fire, so it's opt-in. If you want the raw reading anyway (it may be accurate on your hardware revision — this hasn't been confirmed either way for every unit), enable the entity from the scale's device page. The value is also always included in the diagnostics download.
 
 ### Body fat doesn't match the Renpho app
 
@@ -307,7 +317,7 @@ Before opening a GitHub issue:
 1. **Check Settings → Repairs.** If a repair card explains the problem, the description tells you how to fix it without filing anything.
 2. **Download diagnostics.** Open **Settings → Devices & Services → Renpho Fitness Scale BLE → your scale's device card → Download Diagnostics**. This produces a redacted JSON dump of your config, coordinator state, and pending measurements. Attach it to your issue.
 3. **Include version info:**
-  - Home Assistant version (Settings → About)
+    - Home Assistant version (Settings → About)
     - Integration version (visible on the scale's device card under **Configuration**)
     - Scale firmware revision (also on the device card under `sw_version`)
     - **HVIN** from the regulatory sticker on the back of the scale, including the revision suffix (e.g. `ESCS20MA2`). The HVIN isn't readable over BLE so it can't be included automatically in the diagnostics dump — please type it in by hand.

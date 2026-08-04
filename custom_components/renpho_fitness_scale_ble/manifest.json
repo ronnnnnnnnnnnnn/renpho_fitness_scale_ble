@@ -23,6 +23,10 @@
       "local_name": "FF:04:00:*"
     },
     {
+      "connectable": true,
+      "local_name": "FF:05:00:*"
+    },
+    {
       "connectable": false,
       "manufacturer_id": 65535,
       "manufacturer_data_start": [
@@ -43,8 +47,8 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/ronnnnnnnnnnnnn/renpho_fitness_scale_ble/issues",
   "requirements": [
-    "renpho-escs20m==0.5.0",
-    "multi-user-scale-core==0.2.0"
+    "renpho-escs20m==0.5.1",
+    "multi-user-scale-core==0.2.1"
   ],
-  "version": "0.3.2"
+  "version": "0.3.3"
 }
