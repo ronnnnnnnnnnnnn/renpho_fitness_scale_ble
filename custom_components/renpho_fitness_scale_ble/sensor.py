@@ -11,6 +11,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorExtraStoredData,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -19,6 +20,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util.unit_conversion import MassConverter
 
 from renpho_escs20m import WEIGHT_KEY, ScaleData, WeightUnit
 
@@ -150,11 +152,42 @@ class ScaleUserSensor(RestoreSensor):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         if last_state := await self.async_get_last_sensor_data():
-            self._attr_native_value = last_state.native_value
+            self._attr_native_value = self._restored_native_value(last_state)
             self._attr_available = True
         self.async_on_remove(
             self._coordinator.add_user_listener(self._user_id, self._handle_update)
         )
+
+    def _restored_native_value(self, last_state: SensorExtraStoredData) -> Any:
+        """Return the stored native value, converted to this sensor's native unit.
+
+        Native values are always denominated in kg, and the stored unit is
+        never restored onto the entity. But if restore data ever carries a
+        different mass unit (e.g. lb), restoring the number verbatim would
+        reinterpret it as kg — a one-time ~2.2x spike in recorded history.
+        """
+        value = last_state.native_value
+        stored_unit = last_state.native_unit_of_measurement
+        native_unit = self._attr_native_unit_of_measurement
+        if (
+            isinstance(value, (int, float))
+            and stored_unit is not None
+            and native_unit is not None
+            and stored_unit != native_unit
+            and stored_unit in MassConverter.VALID_UNITS
+            and native_unit in MassConverter.VALID_UNITS
+        ):
+            converted = MassConverter.convert(value, stored_unit, native_unit)
+            _LOGGER.info(
+                "Converted restored value for %s from %s %s to %s %s",
+                self.entity_id,
+                value,
+                stored_unit,
+                converted,
+                native_unit,
+            )
+            return converted
+        return value
 
     @callback
     def _handle_update(self, data: ScaleData) -> None:
