@@ -245,6 +245,12 @@ The device's firmware revision is shown on its device card via the standard `sw_
 
 If Home Assistant pairs with the scale successfully but no weight or body-composition measurements ever come through, the most likely cause is an unsupported hardware revision. Some Renpho scales sold under the ES-CS20M name (and other model names) use a different BLE protocol that this integration doesn't speak. Check the [Supported Devices](#supported-devices) table — specifically the HVIN on the regulatory sticker on the back of your scale. If yours isn't listed (or is in the known-incompatible table), please open an issue with the marketed model and HVIN so the compatibility record can be updated.
 
+If your hardware revision **is** supported, check the log for
+`org.bluez.Error.InProgress` errors or a warning starting with *"Passive
+scanning is not available on this adapter"* — if present, see
+[Bluetooth issues with a native Linux adapter](#bluetooth-issues-with-a-native-linux-adapter-bluez)
+below.
+
 ### `BleakOutOfConnectionSlotsError` in the log
 
 This typically means one of two things:
@@ -273,10 +279,15 @@ Enable **Athlete mode** on the user's profile.
 ### Bluetooth issues with a native Linux adapter (BlueZ)
 
 If setup occasionally fails with `org.bluez.Error.InProgress`, or
-measurements stop arriving on a machine using its own Bluetooth adapter,
-one possible cause seen on some systems (often around Home Assistant
-startup) is the integration's scanner conflicting with Home Assistant's
-shared Bluetooth scanner.
+measurements stop arriving (or never arrive) on a machine using its own
+Bluetooth adapter, one possible cause seen on some systems (often around
+Home Assistant startup) is the integration's scanner conflicting with
+Home Assistant's shared Bluetooth scanner. The tell-tale log line is:
+
+> Passive scanning is not available on this adapter (BlueZ
+> AdvertisementMonitor API not exposed), so the scale library will use
+> its own active scanner. This can fail with org.bluez.Error.InProgress
+> while Home Assistant's shared scanner is starting…
 
 **The durable fix for that cause — enable BlueZ passive scanning.**
 Whenever the integration uses the machine's own adapter, it prefers
