@@ -2,9 +2,17 @@
 
 This custom integration connects your Renpho ES-CS20M smart bathroom scale — and other compatible Renpho scales that share the same BLE protocol (see [Supported Devices](#supported-devices)) — to Home Assistant over Bluetooth Low Energy (BLE). It provides real-time weight measurements, on-device body composition metrics, and intelligent multi-user routing — all without requiring an internet connection or the Renpho app. This is an unofficial, community-built integration. It is not endorsed by, affiliated with, or supported by Renpho. See the [Disclaimer](#disclaimer) at the bottom for details.
 
-> **Also sold as:** Renpho Elis 1, Renpho Smart Body Fat Scale, Renpho Bluetooth Body Composition Scale, and various locale-specific names — the "ES-CS20M" model code is rarely surfaced in retail listings.
-
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/yellow_img.png)](https://www.buymeacoffee.com/ronnnnnnn)
+
+> **Health & safety note:** Body-composition scales measure by passing a low
+> electrical current through the body. This project does not support the
+> manufacturers' zero-current, pregnancy or hold-baby modes, and a mode
+> enabled in the manufacturer's app is not guaranteed to be in effect while the
+> scale is used through this integration. Use may be unsuitable for anyone who might be
+> pregnant or who has a pacemaker or other implanted medical device.
+> Body-composition values are bioimpedance estimates, not clinical
+> measurements, and this integration is not a medical device; do not use its output
+> for medical decisions.
 
 ## Features
 
@@ -381,4 +389,4 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 This integration is not official. It is not endorsed by, directly affiliated with, maintained, authorized, or sponsored by Renpho or any of its affiliates or subsidiaries. All product and company names are the registered trademarks of their original owners. The use of any trade name or trademark is for identification and reference purposes only and does not imply any association with the trademark holder of their product brand.
 
-Use this integration at your own risk.
+This software is provided as is, without warranty of any kind.
