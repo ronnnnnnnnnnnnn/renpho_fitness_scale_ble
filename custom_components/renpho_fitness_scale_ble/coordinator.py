@@ -43,7 +43,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, UnitOfMass
 from homeassistant.core import CoreState, HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceEntry
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import MassConverter
 from multi_user_scale_core import (
@@ -181,6 +181,15 @@ REGISTRATION_PREEMPT_DEBOUNCE_SECONDS = 5
 # from a log message, and a longer cooldown would block legitimate
 # re-step measurements.
 POST_MEASUREMENT_COOLDOWN_SECONDS = 10
+
+
+# How often to check that the local adapter the native scanner is bound to
+# still carries the same hciN name (see `_async_check_native_adapter`). The
+# kernel hands out hciN in registration order, so an adapter that is reset
+# or re-plugged usually comes back under a different name; a BlueZ scanner
+# bound to the old name then hears nothing, without any error, and HA fires
+# no scanner-registration event for it.
+NATIVE_ADAPTER_CHECK_INTERVAL = timedelta(seconds=60)
 
 
 class _NoiseFilter(logging.Filter):
@@ -1062,6 +1071,15 @@ class ScaleDataUpdateCoordinator:
         # `_async_start`). Only ever set when that fallback would otherwise
         # fire into the boot window; cancelled in `async_stop`.
         self._started_listener_unsub: Callable[[], None] | None = None
+        # Local adapter the native scanner (or the library's own scanner) is
+        # bound to, as (hci name, adapter address). Resolved by address in
+        # `_get_bluetooth_scanner` on every (re)start, so the scanner never
+        # depends on BlueZ's default adapter or on a stale hciN name. None
+        # when no local adapter is used (proxy-only, non-Linux).
+        self._native_adapter: tuple[str, str] | None = None
+        # Periodic `_async_check_native_adapter` timer; set in `async_start`,
+        # cancelled in `async_stop`.
+        self._unsub_native_adapter_check: Callable[[], None] | None = None
         self._display_unit: WeightUnit = WeightUnit.KG
         self._config_entry_id: str | None = None
 
@@ -1197,6 +1215,86 @@ class ScaleDataUpdateCoordinator:
             return True
         return False
 
+    async def _async_resolve_native_adapter(
+        self, manager: Any
+    ) -> tuple[str, str, bool] | None:
+        """Pick the local adapter to scan on, as (hci name, address, passive).
+
+        Without an explicit adapter, bleak scans on BlueZ's default adapter
+        (the first powered one), which need not be the adapter that hears
+        the scale - and the scanner stays bound to that hciN name even after
+        the adapter is renamed by a reset or re-plug. Instead the adapter is
+        chosen by address: the one Home Assistant last heard the scale on,
+        else the first adapter Home Assistant has a scanner for (so an
+        adapter whose bluetooth entry is disabled is never used). The hciN
+        name comes from the adapter list `_get_bluetooth_scanner` has just
+        refreshed from BlueZ.
+        """
+        try:
+            adapters = await manager.async_get_bluetooth_adapters()
+        except Exception as err:  # noqa: BLE001 - fall back to the default adapter
+            _LOGGER.debug("Could not read the Bluetooth adapter list: %s", err)
+            return None
+        name_by_address = {
+            details["address"]: name
+            for name, details in adapters.items()
+            if details.get("address")
+        }
+        candidates: list[str] = []
+        try:
+            info = manager.async_last_service_info(self.address, False)
+        except Exception:  # noqa: BLE001
+            info = None
+        if info is not None and info.source:
+            candidates.append(info.source)
+        sources = getattr(manager, "_sources", {}) or {}
+        candidates.extend(
+            address for address in name_by_address if sources.get(address) is not None
+        )
+        for address in candidates:
+            if address in name_by_address:
+                name = name_by_address[address]
+                passive = bool(adapters[name].get("passive_scan"))
+                return name, address, passive
+        return None
+
+    async def _async_check_native_adapter(self, _now: Any = None) -> None:
+        """Restart the scale client when its adapter changed hciN name.
+
+        A reset or re-plugged adapter usually comes back under another hciN
+        name, and HA fires no scanner-registration event for that, so the
+        native scanner would keep listening on a name that no longer exists
+        (or now belongs to a different adapter) and silently miss every
+        weigh-in. Routed through `_async_registration_changed`, so the
+        restart gets the usual lock, debounce and backoff treatment.
+        """
+        if self._stopped or self._native_adapter is None:
+            return
+        manager = _get_bluetooth_manager(self.hass)
+        if manager is None:
+            return
+        name, address = self._native_adapter
+        try:
+            adapters = await manager.async_get_bluetooth_adapters(cached=False)
+        except Exception as err:  # noqa: BLE001 - try again next interval
+            _LOGGER.debug("Could not refresh the Bluetooth adapter list: %s", err)
+            return
+        if adapters.get(name, {}).get("address") == address:
+            return
+        current = next(
+            (n for n, d in adapters.items() if d.get("address") == address), None
+        )
+        _LOGGER.info(
+            "Bluetooth adapter %s used for %s is now %s; restarting scale client",
+            address,
+            self.address,
+            current or "gone",
+        )
+        # Cleared so the check doesn't fire again while the restart is
+        # pending; the restart resolves and sets it anew.
+        self._native_adapter = None
+        self.hass.async_create_task(self._async_registration_changed())
+
     async def _get_bluetooth_scanner(self) -> BaseBleakScanner | None:
         """Get the optimal Bluetooth scanner based on available resources.
 
@@ -1225,6 +1323,15 @@ class ScaleDataUpdateCoordinator:
             # disabled.
             native_passive = False
 
+            # Refresh the adapter list from BlueZ first. The cached list is
+            # only refreshed now and then, so after an adapter was reset or
+            # re-plugged it can still miss the adapter (or name it by its
+            # old hciN), and the check below would wrongly find no adapter.
+            try:
+                await manager.async_get_bluetooth_adapters(cached=False)
+            except Exception as err:  # noqa: BLE001 - use the cached list
+                _LOGGER.debug("Could not refresh the Bluetooth adapter list: %s", err)
+
             # Check for native adapters with better error handling
             adapter_check_ok = True
             try:
@@ -1246,6 +1353,23 @@ class ScaleDataUpdateCoordinator:
                 native = False
                 native_passive = False
                 adapter_check_ok = False
+
+            # Bind native scanning to a specific adapter, chosen by address
+            # (see `_async_resolve_native_adapter`), and take the passive
+            # capability from that adapter rather than from whichever one
+            # was found first above. The name is also handed to the scale
+            # library, which uses it for its own scanner in the active
+            # fallback below.
+            self._native_adapter = None
+            adapter_name: str | None = None
+            if native and IS_LINUX:
+                resolved = await self._async_resolve_native_adapter(manager)
+                if resolved is not None:
+                    adapter_name, adapter_address, native_passive = resolved
+                    self._native_adapter = (adapter_name, adapter_address)
+                    _LOGGER.debug(
+                        "Native scanning on %s (%s)", adapter_name, adapter_address
+                    )
 
             # Get ESPHome proxies with error handling. Keep the whole
             # bleak-esphome ESPHomeClientData (client + cached device_info +
@@ -1311,6 +1435,7 @@ class ScaleDataUpdateCoordinator:
                             None,
                             BluetoothScanningMode.PASSIVE,
                             esphome_clients,
+                            adapter=adapter_name,
                         )
                         _LOGGER.debug(
                             "Created hybrid scanner with native and proxy support"
@@ -1345,6 +1470,7 @@ class ScaleDataUpdateCoordinator:
                         None,
                         BluetoothScanningMode.PASSIVE,
                         [],
+                        adapter=adapter_name,
                     )
                     _LOGGER.debug("Created native-only passive scanner")
                 except BleakError as err:
@@ -1602,6 +1728,12 @@ class ScaleDataUpdateCoordinator:
                     self._registration_changed, None
                 )
             )
+        if self._unsub_native_adapter_check is None:
+            self._unsub_native_adapter_check = async_track_time_interval(
+                self.hass,
+                self._async_check_native_adapter,
+                NATIVE_ADAPTER_CHECK_INTERVAL,
+            )
         async with self._start_lock:
             await self._async_start()
 
@@ -1694,6 +1826,7 @@ class ScaleDataUpdateCoordinator:
                 notification_callback=self._on_scale_data,
                 display_unit=self._display_unit,
                 bleak_scanner_backend=scanner,
+                adapter=self._native_adapter[0] if self._native_adapter else None,
                 logger=self._library_logger(),
             )
         elif self._protocol == PROTOCOL_X55AA:
@@ -1708,6 +1841,7 @@ class ScaleDataUpdateCoordinator:
                 display_unit=self._display_unit,
                 profile=self._select_library_mode_argument(),
                 bleak_scanner_backend=scanner,
+                adapter=self._native_adapter[0] if self._native_adapter else None,
                 clear_stored_measurements=True,
                 logger=self._library_logger(),
             )
@@ -1719,6 +1853,7 @@ class ScaleDataUpdateCoordinator:
                 display_unit=self._display_unit,
                 profile=profile_arg,
                 bleak_scanner_backend=scanner,
+                adapter=self._native_adapter[0] if self._native_adapter else None,
                 # Drain the scale's store of offline measurements (readings
                 # taken while HA was down) each session. Delivery deletes
                 # them from the scale.
@@ -1980,6 +2115,9 @@ class ScaleDataUpdateCoordinator:
         if self._scanner_change_cb_unregister is not None:
             self._scanner_change_cb_unregister()
             self._scanner_change_cb_unregister = None
+        if self._unsub_native_adapter_check is not None:
+            self._unsub_native_adapter_check()
+            self._unsub_native_adapter_check = None
         async with self._start_lock:
             self._stopped = True
             # Cancel any pending backoff retry so a stopped/unloaded
